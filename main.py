@@ -6,6 +6,15 @@ from decouple import config
 
 # ── lógica de negócio ────────────────────────────────────────────────────────
 
+POSTOS = [
+    ("GRACIOSA", "14526"),
+    ("PIRAI", "14566"),
+    ("JARIVA", "14562"),
+    ("BEMER", "14564"),
+    ("GRACIOSA V", "14565"),
+    ("FATIMA", "14563"),
+]
+
 
 def buscar_dados_brutos(data_inicial, data_final, empresa_codigo):
     wp_base_url = config("WP_BASE_URL")
@@ -154,7 +163,7 @@ BORDER = "#2E3247"
 MONO = "Courier New"
 
 
-# ── helpers de layout (sem ft.padding.symmetric) ──────────────────────────────
+# ── helpers de layout ─────────────────────────────────────────────────────────
 
 
 def pad(h=0, v=0):
@@ -229,11 +238,11 @@ def make_textfield(value="", hint="", keyboard=ft.KeyboardType.TEXT):
     )
 
 
-def labeled_field(label, tf):
+def labeled_field(label, control):
     return ft.Column(
         controls=[
             ft.Text(label, size=11, color=MUTED, font_family=MONO),
-            tf,
+            control,
         ],
         spacing=6,
     )
@@ -301,21 +310,42 @@ def main(page: ft.Page):
     today = date.today()
     first_day = today.replace(day=1)
 
-    # campos de texto
+    # campos de data
     tf_ini = make_textfield(
-        first_day.strftime("%Y-%m-%d"), "AAAA-MM-DD", keyboard=ft.KeyboardType.DATETIME
+        first_day.strftime("%Y-%m-%d"),
+        "AAAA-MM-DD",
+        keyboard=ft.KeyboardType.DATETIME,
     )
     tf_fim = make_textfield(
-        today.strftime("%Y-%m-%d"), "AAAA-MM-DD", keyboard=ft.KeyboardType.DATETIME
+        today.strftime("%Y-%m-%d"),
+        "AAAA-MM-DD",
+        keyboard=ft.KeyboardType.DATETIME,
     )
-    tf_empresa = make_textfield(hint="ex: 14562", keyboard=ft.KeyboardType.NUMBER)
+
+    # dropdown de postos
+    dd_posto = ft.Dropdown(
+        options=[
+            ft.dropdown.Option(key=codigo, text=f"{nome}  ·  {codigo}")
+            for nome, codigo in POSTOS
+        ],
+        value=POSTOS[0][1],  # seleciona o primeiro por padrão
+        text_style=ft.TextStyle(color=TEXT, font_family=MONO, size=14),
+        border_color=BORDER,
+        focused_border_color=ACCENT,
+        fill_color=CARD,
+        filled=True,
+        border_radius=6,
+        height=46,
+        content_padding=pad(h=14, v=4),
+        # texto da opção selecionada
+        color=TEXT,
+    )
 
     # estado da UI
     status_text = ft.Text("", size=12, color=MUTED, font_family=MONO)
     resultados_col = ft.Column(spacing=0, visible=False)
     progress = ft.ProgressBar(color=ACCENT, bgcolor=BORDER, visible=False, height=2)
 
-    # botão — ft.Button é a API correta no Flet 0.84
     btn_gerar = ft.Button(
         content=ft.Text(
             "GERAR RELATÓRIO",
@@ -337,20 +367,17 @@ def main(page: ft.Page):
 
     def validar():
         erros = []
-        for tf, nome in [
-            (tf_ini, "Data inicial"),
-            (tf_fim, "Data final"),
-            (tf_empresa, "Código"),
-        ]:
-            if not (tf.value or "").strip():
-                erros.append(f"{nome} é obrigatório")
         for tf, nome in [(tf_ini, "Data inicial"), (tf_fim, "Data final")]:
             v = (tf.value or "").strip()
-            if v:
+            if not v:
+                erros.append(f"{nome} é obrigatório")
+            else:
                 try:
                     datetime.strptime(v, "%Y-%m-%d")
                 except ValueError:
                     erros.append(f"{nome}: formato inválido (use AAAA-MM-DD)")
+        if not dd_posto.value:
+            erros.append("Selecione um posto")
         return erros
 
     # ── handler ───────────────────────────────────────────────────────────────
@@ -371,32 +398,47 @@ def main(page: ft.Page):
         resultados_col.visible = False
         page.update()
 
+        # nome legível do posto selecionado
+        nome_posto = next((n for n, c in POSTOS if c == dd_posto.value), dd_posto.value)
+
         try:
             dados = gerar_relatorio_filial(
                 tf_ini.value.strip(),
                 tf_fim.value.strip(),
-                tf_empresa.value.strip(),
+                dd_posto.value,
             )
 
             resultados_col.controls.clear()
             resultados_col.controls.append(
                 ft.Container(
-                    content=ft.Row(
+                    content=ft.Column(
                         controls=[
-                            ft.Text(
-                                "RESULTADO",
-                                size=11,
-                                color=MUTED,
-                                font_family=MONO,
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "RESULTADO",
+                                        size=11,
+                                        color=MUTED,
+                                        font_family=MONO,
+                                    ),
+                                    ft.Text(
+                                        f"{tf_ini.value}  →  {tf_fim.value}",
+                                        size=11,
+                                        color=MUTED,
+                                        font_family=MONO,
+                                    ),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             ),
                             ft.Text(
-                                f"{tf_ini.value}  →  {tf_fim.value}",
-                                size=11,
-                                color=MUTED,
+                                nome_posto.upper(),
+                                size=13,
+                                weight=ft.FontWeight.W_700,
+                                color=ACCENT,
                                 font_family=MONO,
                             ),
                         ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        spacing=4,
                     ),
                     margin=margin_bottom(12),
                 )
@@ -441,7 +483,7 @@ def main(page: ft.Page):
                     spacing=12,
                     expand=True,
                 ),
-                labeled_field("CÓDIGO DA EMPRESA", tf_empresa),
+                labeled_field("POSTO", dd_posto),
                 ft.Container(height=4),
                 ft.Row(controls=[btn_gerar]),
                 progress,
