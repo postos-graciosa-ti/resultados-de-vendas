@@ -1,10 +1,9 @@
+from collections import defaultdict
 from datetime import date, datetime
 
 import flet as ft
 import httpx
 from decouple import config
-
-# ── lógica de negócio ────────────────────────────────────────────────────────
 
 POSTOS = [
     ("GRACIOSA", "14526"),
@@ -15,33 +14,45 @@ POSTOS = [
     ("FATIMA", "14563"),
 ]
 
+TIPOS_RELATORIO = [
+    ("Relatório de Filial", "filial"),
+    ("Relatório de Funcionários", "funcionarios"),
+]
+
 
 def buscar_dados_brutos(data_inicial, data_final, empresa_codigo):
     wp_base_url = config("WP_BASE_URL")
+
     wp_api_key = config("WP_API_KEY")
+
     url = (
         f"{wp_base_url}/INTEGRACAO/MAPA_DESEMPENHO"
         f"?CHAVE={wp_api_key}&dataInicial={data_inicial}"
         f"&dataFinal={data_final}&empresaCodigo={empresa_codigo}"
     )
+
     with httpx.Client() as client:
         resposta = client.get(url, timeout=30)
+
         resposta.raise_for_status()
+
         return resposta.json()
 
 
 def somar_por_criterio(dados, campo_filtro, valores_filtro, campo_soma):
     total = 0.0
+
     if isinstance(valores_filtro, str):
         valores_filtro = [valores_filtro]
+
     for item in dados:
         if item.get(campo_filtro) in valores_filtro:
             total += float(item.get(campo_soma) or 0)
+
     return total
 
 
-def gerar_relatorio_filial(data_inicial, data_final, empresa_codigo):
-    dados = buscar_dados_brutos(data_inicial, data_final, empresa_codigo)
+def _agregadores_de(dados):
     return {
         "Gasolina Grid": somar_por_criterio(
             dados, "produtoNome", "GASOLINA ADITIVADA", "quantidade"
@@ -133,7 +144,26 @@ def gerar_relatorio_filial(data_inicial, data_final, empresa_codigo):
     }
 
 
-# ── helpers de formatação ────────────────────────────────────────────────────
+def gerar_relatorio_filial(data_inicial, data_final, empresa_codigo):
+    dados = buscar_dados_brutos(data_inicial, data_final, empresa_codigo)
+
+    return _agregadores_de(dados)
+
+
+def gerar_relatorio_funcionarios(data_inicial, data_final, empresa_codigo):
+    dados = buscar_dados_brutos(data_inicial, data_final, empresa_codigo)
+
+    por_func: dict[str, list] = defaultdict(list)
+
+    for item in dados:
+        nome = item.get("funcionarioNome") or "SEM NOME"
+
+        por_func[nome].append(item)
+
+    return {
+        nome: _agregadores_de(registros) for nome, registros in sorted(por_func.items())
+    }
+
 
 CURRENCY_KEYS = {"Vendas Pista", "Troca de Óleo", "Vendas Loja"}
 
@@ -141,6 +171,7 @@ CURRENCY_KEYS = {"Vendas Pista", "Troca de Óleo", "Vendas Loja"}
 def fmt_valor(chave, valor):
     if chave in CURRENCY_KEYS:
         return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
     return f"{valor:,.3f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
@@ -148,22 +179,27 @@ def fmt_label(chave):
     return "R$" if chave in CURRENCY_KEYS else "un."
 
 
-# ── cores ────────────────────────────────────────────────────────────────────
-
 BG = "#0F1117"
+
 SURFACE = "#1A1D27"
+
 CARD = "#22263A"
+
 ACCENT = "#F5A623"
+
 ACCENT2 = "#4FC3F7"
+
 TEXT = "#E8EAF0"
+
 MUTED = "#6B7280"
+
 SUCCESS = "#34D399"
+
 DANGER = "#F87171"
+
 BORDER = "#2E3247"
+
 MONO = "Courier New"
-
-
-# ── helpers de layout ─────────────────────────────────────────────────────────
 
 
 def pad(h=0, v=0):
@@ -180,9 +216,6 @@ def margin_h(h):
 
 def margin_v(v):
     return ft.Margin(left=0, right=0, top=v, bottom=v)
-
-
-# ── componentes ──────────────────────────────────────────────────────────────
 
 
 def header():
@@ -238,6 +271,22 @@ def make_textfield(value="", hint="", keyboard=ft.KeyboardType.TEXT):
     )
 
 
+def make_dropdown(options_kv, value=None):
+    return ft.Dropdown(
+        options=[ft.dropdown.Option(key=k, text=t) for t, k in options_kv],
+        value=value or options_kv[0][1],
+        text_style=ft.TextStyle(color=TEXT, font_family=MONO, size=14),
+        border_color=BORDER,
+        focused_border_color=ACCENT,
+        fill_color=CARD,
+        filled=True,
+        border_radius=6,
+        height=46,
+        content_padding=pad(h=14, v=4),
+        color=TEXT,
+    )
+
+
 def labeled_field(label, control):
     return ft.Column(
         controls=[
@@ -250,6 +299,10 @@ def labeled_field(label, control):
 
 def divider_line():
     return ft.Container(height=1, bgcolor=BORDER, margin=margin_v(8))
+
+
+def section_divider(label):
+    return ft.Container(height=1, bgcolor=BORDER, margin=margin_v(4))
 
 
 def resultado_card(chave, valor):
@@ -295,55 +348,89 @@ def resultado_card(chave, valor):
     )
 
 
-# ── app ───────────────────────────────────────────────────────────────────────
+def funcionario_section(nome, indicadores):
+    cards = ft.Column(
+        controls=[resultado_card(k, v) for k, v in indicadores.items()],
+        spacing=0,
+        visible=False,
+    )
+
+    chevron = ft.Text("▶", size=11, color=MUTED, font_family=MONO)
+
+    def toggle(e):
+        cards.visible = not cards.visible
+        chevron.value = "▼" if cards.visible else "▶"
+        e.control.page.update()
+
+    header_row = ft.Container(
+        content=ft.Row(
+            controls=[
+                ft.Text(
+                    nome,
+                    size=13,
+                    weight=ft.FontWeight.W_600,
+                    color=TEXT,
+                    font_family=MONO,
+                    expand=True,
+                ),
+                chevron,
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        ),
+        padding=pad(h=16, v=12),
+        bgcolor=SURFACE,
+        border=ft.border.all(1, BORDER),
+        border_radius=8,
+        margin=margin_bottom(4),
+        on_click=toggle,
+        ink=True,
+    )
+
+    return ft.Column(controls=[header_row, cards], spacing=0)
 
 
 def main(page: ft.Page):
     page.title = "Mapa de Desempenho"
+
     page.bgcolor = BG
+
     page.padding = 0
+
     page.window.width = 520
+
     page.window.height = 820
+
     page.window.resizable = True
+
     page.scroll = ft.ScrollMode.ADAPTIVE
 
     today = date.today()
+
     first_day = today.replace(day=1)
 
-    # campos de data
     tf_ini = make_textfield(
         first_day.strftime("%Y-%m-%d"),
         "AAAA-MM-DD",
         keyboard=ft.KeyboardType.DATETIME,
     )
+
     tf_fim = make_textfield(
         today.strftime("%Y-%m-%d"),
         "AAAA-MM-DD",
         keyboard=ft.KeyboardType.DATETIME,
     )
 
-    # dropdown de postos
-    dd_posto = ft.Dropdown(
-        options=[
-            ft.dropdown.Option(key=codigo, text=f"{nome}  ·  {codigo}")
-            for nome, codigo in POSTOS
-        ],
-        value=POSTOS[0][1],  # seleciona o primeiro por padrão
-        text_style=ft.TextStyle(color=TEXT, font_family=MONO, size=14),
-        border_color=BORDER,
-        focused_border_color=ACCENT,
-        fill_color=CARD,
-        filled=True,
-        border_radius=6,
-        height=46,
-        content_padding=pad(h=14, v=4),
-        # texto da opção selecionada
-        color=TEXT,
+    dd_posto = make_dropdown(
+        [(f"{n}  ·  {c}", c) for n, c in POSTOS],
+        value=POSTOS[0][1],
     )
 
-    # estado da UI
+    dd_tipo = make_dropdown(TIPOS_RELATORIO)
+
     status_text = ft.Text("", size=12, color=MUTED, font_family=MONO)
+
     resultados_col = ft.Column(spacing=0, visible=False)
+
     progress = ft.ProgressBar(color=ACCENT, bgcolor=BORDER, visible=False, height=2)
 
     btn_gerar = ft.Button(
@@ -363,52 +450,61 @@ def main(page: ft.Page):
         expand=True,
     )
 
-    # ── validação ─────────────────────────────────────────────────────────────
-
     def validar():
         erros = []
+
         for tf, nome in [(tf_ini, "Data inicial"), (tf_fim, "Data final")]:
             v = (tf.value or "").strip()
+
             if not v:
                 erros.append(f"{nome} é obrigatório")
+
             else:
                 try:
                     datetime.strptime(v, "%Y-%m-%d")
+
                 except ValueError:
                     erros.append(f"{nome}: formato inválido (use AAAA-MM-DD)")
+
         if not dd_posto.value:
             erros.append("Selecione um posto")
-        return erros
 
-    # ── handler ───────────────────────────────────────────────────────────────
+        if not dd_tipo.value:
+            erros.append("Selecione um tipo de relatório")
+
+        return erros
 
     def on_gerar(e):
         erros = validar()
+
         if erros:
             status_text.value = "⚠ " + " · ".join(erros)
+
             status_text.color = DANGER
+
             resultados_col.visible = False
+
             page.update()
+
             return
 
         btn_gerar.disabled = True
+
         progress.visible = True
+
         status_text.value = "Buscando dados..."
+
         status_text.color = MUTED
+
         resultados_col.visible = False
+
         page.update()
 
-        # nome legível do posto selecionado
         nome_posto = next((n for n, c in POSTOS if c == dd_posto.value), dd_posto.value)
 
         try:
-            dados = gerar_relatorio_filial(
-                tf_ini.value.strip(),
-                tf_fim.value.strip(),
-                dd_posto.value,
-            )
-
             resultados_col.controls.clear()
+
             resultados_col.controls.append(
                 ft.Container(
                     content=ft.Column(
@@ -443,27 +539,57 @@ def main(page: ft.Page):
                     margin=margin_bottom(12),
                 )
             )
-            for chave, valor in dados.items():
-                resultados_col.controls.append(resultado_card(chave, valor))
+
+            if dd_tipo.value == "filial":
+                dados = gerar_relatorio_filial(
+                    tf_ini.value.strip(),
+                    tf_fim.value.strip(),
+                    dd_posto.value,
+                )
+
+                for chave, valor in dados.items():
+                    resultados_col.controls.append(resultado_card(chave, valor))
+
+                status_text.value = f"✓ {len(dados)} indicadores carregados"
+
+            else:
+                dados = gerar_relatorio_funcionarios(
+                    tf_ini.value.strip(),
+                    tf_fim.value.strip(),
+                    dd_posto.value,
+                )
+
+                for nome_func, indicadores in dados.items():
+                    resultados_col.controls.append(
+                        funcionario_section(nome_func, indicadores)
+                    )
+
+                status_text.value = (
+                    f"✓ {len(dados)} funcionários carregados  ·  clique para expandir"
+                )
 
             resultados_col.visible = True
-            status_text.value = f"✓ {len(dados)} indicadores carregados"
+
             status_text.color = SUCCESS
 
         except httpx.HTTPStatusError as ex:
             status_text.value = f"✗ Erro HTTP {ex.response.status_code}"
+
             status_text.color = DANGER
+
         except Exception as ex:
             status_text.value = f"✗ {ex}"
+
             status_text.color = DANGER
+
         finally:
             btn_gerar.disabled = False
+
             progress.visible = False
+
             page.update()
 
     btn_gerar.on_click = on_gerar
-
-    # ── layout ────────────────────────────────────────────────────────────────
 
     form_card = ft.Container(
         content=ft.Column(
@@ -484,6 +610,7 @@ def main(page: ft.Page):
                     expand=True,
                 ),
                 labeled_field("POSTO", dd_posto),
+                labeled_field("TIPO DE RELATÓRIO", dd_tipo),
                 ft.Container(height=4),
                 ft.Row(controls=[btn_gerar]),
                 progress,
