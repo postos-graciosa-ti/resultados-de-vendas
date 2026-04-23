@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date
 
 import flet as ft
 import httpx
@@ -6,9 +6,9 @@ from decouple import config
 
 
 def buscar_dados_brutos(data_inicial, data_final, empresa_codigo):
-    # Simulando a busca ou usando suas variáveis de ambiente
     try:
         wp_base_url = config("WP_BASE_URL")
+
         wp_api_key = config("WP_API_KEY")
 
         wp_mapa_desempenho_url = (
@@ -16,51 +16,54 @@ def buscar_dados_brutos(data_inicial, data_final, empresa_codigo):
             f"?CHAVE={wp_api_key}&dataInicial={data_inicial}"
             f"&dataFinal={data_final}&empresaCodigo={empresa_codigo}"
         )
+
         with httpx.Client() as client:
             resposta = client.get(wp_mapa_desempenho_url)
+
             resposta.raise_for_status()
+
             return resposta.json()
+
     except Exception as e:
         print(f"Erro ao buscar dados: {e}")
+
         return []
 
 
 def somar_por_criterio(dados, campo_filtro, valores_filtro, campo_soma):
     total = 0.0
+
     if isinstance(valores_filtro, str):
         valores_filtro = [valores_filtro]
+
     for item in dados:
         if item.get(campo_filtro) in valores_filtro:
             total += float(item.get(campo_soma) or 0)
+
     return total
 
 
-# --- DICIONÁRIO DE METAS (HARDCODED) ---
-# Estrutura: { Indicador: { "metas": [v1, v2, v3], "fatores": [f1, f2, f3] } }
 METAS_CONFIG = {
     "Gasolina grid": {"metas": [1000, 2000, 3000], "fatores": [0.01, 0.02, 0.03]},
     "Vendas pista": {"metas": [5000, 10000, 15000], "fatores": [0.005, 0.01, 0.015]},
     "Aditivos": {"metas": [50, 100, 150], "fatores": [1.0, 1.5, 2.0]},
-    # ... adicione os outros conforme necessário
 }
-
-# --- INTERFACE FLET ---
 
 
 def main(page: ft.Page):
-    page.title = "Sistema de Desempenho - Relatórios"
+    page.title = "Postos Graciosa | Relatórios de Desempenho"
+
     page.theme_mode = ft.ThemeMode.LIGHT
+
     page.padding = 20
+
     page.scroll = "auto"
 
-    # Campos de Entrada
-    txt_data_ini = ft.TextField(
-        label="Data Inicial (AAAA-MM-DD)", value="2026-03-01", expand=True
-    )
-    txt_data_fim = ft.TextField(
-        label="Data Final (AAAA-MM-DD)", value="2026-03-31", expand=True
-    )
-    txt_filial = ft.TextField(label="Código Filial", value="14562", expand=True)
+    txt_data_ini = ft.TextField(label="Data Inicial", value="2026-03-26", expand=True)
+
+    txt_data_fim = ft.TextField(label="Data Final", value="2026-04-25", expand=True)
+
+    txt_filial = ft.TextField(label="Filial", value="14562", expand=True)
 
     dd_tipo = ft.Dropdown(
         label="Tipo de Relatório",
@@ -68,48 +71,92 @@ def main(page: ft.Page):
             ft.dropdown.Option("filial", "RELATÓRIO POR FILIAL"),
             ft.dropdown.Option("funcionario", "RELATÓRIO POR FUNCIONÁRIO"),
         ],
-        value="filial",
+        value="funcionario",
         expand=True,
     )
 
     result_container = ft.Column(spacing=20)
 
+    def calcular_projecao_diaria(realizado, proxima_meta):
+        hoje = date.today()
+
+        if hoje.day <= 25:
+            fim_ciclo = date(hoje.year, hoje.month, 25)
+
+        else:
+            mes_fim = hoje.month + 1 if hoje.month < 12 else 1
+
+            ano_fim = hoje.year if hoje.month < 12 else hoje.year + 1
+
+            fim_ciclo = date(ano_fim, mes_fim, 25)
+
+        dias_restantes = (fim_ciclo - hoje).days
+
+        if dias_restantes <= 0:
+            dias_restantes = 1
+
+        falta = proxima_meta - realizado
+
+        if falta <= 0:
+            return 0, dias_restantes
+
+        return (falta / dias_restantes), dias_restantes
+
     def calcular_comissao_e_meta(indicador, realizado):
         config_meta = METAS_CONFIG.get(
             indicador, {"metas": [0, 0, 0], "fatores": [0, 0, 0]}
         )
+
         metas = config_meta["metas"]
+
         fatores = config_meta["fatores"]
 
         nivel_batido = -1
+
         for i, m in enumerate(metas):
             if realizado >= m:
                 nivel_batido = i
 
         comissao = realizado * fatores[nivel_batido] if nivel_batido >= 0 else 0
 
-        proxima_meta_str = ""
-        if nivel_batido < 2:
-            falta = metas[nivel_batido + 1] - realizado
-            proxima_meta_str = f"Faltam {falta:,.2f} para Nível {nivel_batido + 2}"
-        else:
-            ultrapassou = realizado - metas[2]
-            proxima_meta_str = f"Meta Máxima Batida! (+{ultrapassou:,.2f})"
+        status_str = ""
 
-        return nivel_batido + 1, comissao, proxima_meta_str
+        diario_str = ""
+
+        if nivel_batido < 2:
+            prox_meta_valor = metas[nivel_batido + 1]
+
+            falta = prox_meta_valor - realizado
+
+            valor_diario, dias = calcular_projecao_diaria(realizado, prox_meta_valor)
+
+            status_str = f"Falta {falta:,.2f} para Nível {nivel_batido + 2}"
+
+            diario_str = f"R$ {valor_diario:,.2f}/dia ({dias} dias rest.)"
+
+        else:
+            status_str = "Meta 3 atingida!"
+
+            diario_str = "-"
+
+        return nivel_batido + 1, comissao, status_str, diario_str
 
     def processar_relatorio(e):
         result_container.controls.clear()
+
         page.update()
 
         dados = buscar_dados_brutos(
             txt_data_ini.value, txt_data_fim.value, txt_filial.value
         )
+
         if not dados:
             result_container.controls.append(
                 ft.Text("Nenhum dado encontrado.", color="red")
             )
+
             page.update()
+
             return
 
         indicadores_nomes = {
@@ -121,7 +168,6 @@ def main(page: ft.Page):
                     "ADITIVOS",
                     "PALHETAS",
                     "FILTROS DE AR",
-                    "FILTROS DE COMBUSTÍVEL",
                     "FILTROS DE OLEO",
                     "DIVERSOS PISTA",
                     "PRODUTOS PARA CARRO",
@@ -131,17 +177,6 @@ def main(page: ft.Page):
                 "valorVenda",
             ),
             "Aditivos": ("grupoNome", ["ADITIVOS"], "quantidade"),
-            "Vendas loja": (
-                "grupoNome",
-                [
-                    "CARTÕES",
-                    "CIGARROS",
-                    "CERVEJAS",
-                    "AGUAS/ CHAS/ REFRIGERANTES",
-                    "CONVENIENCIA/ALIMENTOS DIVERSOS",
-                ],
-                "valorVenda",
-            ),  # Reduzido para exemplo
         }
 
         if dd_tipo.value == "filial":
@@ -152,8 +187,10 @@ def main(page: ft.Page):
                 ],
                 rows=[],
             )
+
             for nome, specs in indicadores_nomes.items():
                 valor = somar_por_criterio(dados, specs[0], specs[1], specs[2])
+
                 table.rows.append(
                     ft.DataRow(
                         cells=[
@@ -166,10 +203,10 @@ def main(page: ft.Page):
             result_container.controls.append(
                 ft.Text("Resumo por Filial", size=20, weight="bold")
             )
+
             result_container.controls.append(table)
 
         else:
-            # Agrupar por Funcionário
             funcionarios = sorted(
                 list(
                     set(
@@ -182,26 +219,26 @@ def main(page: ft.Page):
 
             for func in funcionarios:
                 dados_func = [d for d in dados if d.get("funcionarioNome") == func]
-
                 rows = []
-                total_comissao_func = 0
 
                 for nome, specs in indicadores_nomes.items():
                     realizado = somar_por_criterio(
                         dados_func, specs[0], specs[1], specs[2]
                     )
-                    nivel, comissao, status_meta = calcular_comissao_e_meta(
+                    nivel, comissao, status, diario = calcular_comissao_e_meta(
                         nome, realizado
                     )
-                    total_comissao_func += comissao
 
                     rows.append(
                         ft.DataRow(
                             cells=[
                                 ft.DataCell(ft.Text(nome)),
                                 ft.DataCell(ft.Text(f"{realizado:,.2f}")),
-                                ft.DataCell(ft.Text(f"Nível {nivel}")),
-                                ft.DataCell(ft.Text(status_meta)),
+                                ft.DataCell(ft.Text(f"Nív. {nivel}")),
+                                ft.DataCell(ft.Text(status)),
+                                ft.DataCell(
+                                    ft.Text(diario, color="orange", weight="bold")
+                                ),
                                 ft.DataCell(ft.Text(f"R$ {comissao:,.2f}")),
                             ]
                         )
@@ -209,48 +246,35 @@ def main(page: ft.Page):
 
                 result_container.controls.append(
                     ft.Card(
-                        content=ft.Container(
-                            padding=15,
+                        ft.Container(
+                            padding=10,
                             content=ft.Column(
                                 [
-                                    ft.Text(
-                                        f"Funcionário: {func}",
-                                        size=18,
-                                        weight="bold",
-                                        color="blue",
-                                    ),
+                                    ft.Text(f"Funcionário: {func}", weight="bold"),
                                     ft.DataTable(
                                         columns=[
                                             ft.DataColumn(ft.Text("Indicador")),
                                             ft.DataColumn(ft.Text("Realizado")),
                                             ft.DataColumn(ft.Text("Meta")),
-                                            ft.DataColumn(ft.Text("Status")),
+                                            ft.DataColumn(ft.Text("Falta")),
+                                            ft.DataColumn(ft.Text("Necessário/Dia")),
                                             ft.DataColumn(ft.Text("Comissão")),
                                         ],
                                         rows=rows,
-                                    ),
-                                    ft.Text(
-                                        f"Total Comissão: R$ {total_comissao_func:,.2f}",
-                                        size=16,
-                                        weight="bold",
                                     ),
                                 ]
                             ),
                         )
                     )
                 )
-
         page.update()
 
     btn_gerar = ft.ElevatedButton(
-        "Gerar Relatório", icon="play_arrow", on_click=processar_relatorio
+        "Gerar", icon="play_arrow", on_click=processar_relatorio
     )
-
     page.add(
-        ft.Text("Filtros de Pesquisa", size=25, weight="bold"),
         ft.Row([txt_data_ini, txt_data_fim, txt_filial]),
         ft.Row([dd_tipo, btn_gerar]),
-        ft.Divider(),
         result_container,
     )
 
