@@ -1,30 +1,119 @@
 from datetime import date
-
 import flet as ft
 import httpx
 from decouple import config
 
 METAS_POR_POSTO = {
-    "14526": {
-        "Gasolina grid": {"metas": [1000, 2000, 3000], "fatores": [0.01, 0.02, 0.03]},
-        "Vendas pista": {
-            "metas": [5000, 10000, 15000],
-            "fatores": [0.005, 0.01, 0.015],
-        },
-        "Aditivos": {"metas": [50, 100, 150], "fatores": [1.0, 1.5, 2.0]},
-    },
-    "14566": {
-        "Gasolina grid": {"metas": [800, 1600, 2400], "fatores": [0.01, 0.02, 0.03]},
-        "Vendas pista": {"metas": [4000, 8000, 12000], "fatores": [0.005, 0.01, 0.015]},
-        "Aditivos": {"metas": [40, 80, 120], "fatores": [1.0, 1.5, 2.0]},
-    },
+    # JARIVA
     "14562": {
-        "Gasolina grid": {"metas": [1000, 2000, 3000], "fatores": [0.01, 0.02, 0.03]},
-        "Vendas pista": {
-            "metas": [5000, 10000, 15000],
-            "fatores": [0.005, 0.01, 0.015],
+        "GRID": {
+            "metas": [
+                10000.0,
+                12000.0,
+                15000.0,
+            ],
+            "fatores": [
+                0.01,
+                0.015,
+                0.02,
+            ],
         },
-        "Aditivos": {"metas": [50, 100, 150], "fatores": [1.0, 1.5, 2.0]},
+        "Vendas Pista": {
+            "metas": [
+                2000.0,
+                3000.0,
+                4000.0,
+            ],
+            "fatores": [
+                0.05,
+                0.06,
+                0.07,
+            ],
+        },
+        "Aditivos": {
+            "metas": [
+                20.0,
+                35.0,
+                6000.0,
+            ],
+            "fatores": [
+                0.50,
+                1.50,
+                0.01,
+            ],
+        },
+        "Palhetas": {
+            "metas": [
+                10.0,
+                15.0,
+                25.0,
+            ],
+            "fatores": [
+                1.00,
+                1.50,
+                2.00,
+            ],
+        },
+        "Diversos Pista": {
+            "metas": [
+                15.0,
+                25.0,
+                30.0,
+            ],
+            "fatores": [
+                1.00,
+                1.50,
+                2.00,
+            ],
+        },
+        "Produtos para Carro": {
+            "metas": [
+                10.0,
+                15.0,
+                25.0,
+            ],
+            "fatores": [
+                1.00,
+                1.50,
+                2.00,
+            ],
+        },
+        "Filtros": {
+            "metas": [
+                45.0,
+                60.0,
+                75.0,
+            ],
+            "fatores": [
+                1.00,
+                1.50,
+                2.00,
+            ],
+        },
+        "Vendas Loja": {
+            "metas": [
+                6000,
+                8000,
+                10000,
+            ],
+            "fatores": [
+                0.025,
+                0.050,
+                1.000,
+            ],
+        },
+        "Troca de Óleo": {
+            "metas": [
+                15000.0,
+                20000.0,
+                25000.0,
+            ],
+            "fatores": [
+                0.06,
+                0.07,
+                0.08,
+            ],
+        },
     },
 }
 
@@ -168,14 +257,9 @@ def main(page: ft.Page):
         label="Selecionar Posto",
         expand=True,
         options=[
-            ft.dropdown.Option("14526", "GRACIOSA"),
-            ft.dropdown.Option("14566", "PIRAI"),
-            ft.dropdown.Option("14562", "JARIVA"),
-            ft.dropdown.Option("14564", "BEMER"),
-            ft.dropdown.Option("14565", "GRACIOSA V"),
-            ft.dropdown.Option("14563", "FATIMA"),
+            ft.dropdown.Option("14562", "Posto Jariva"),
         ],
-        value="14526",
+        value="14562",
     )
 
     dd_tipo = ft.Dropdown(
@@ -211,15 +295,22 @@ def main(page: ft.Page):
             return
 
         indicadores_nomes = {
-            "Gasolina grid": ("produtoNome", ["GASOLINA ADITIVADA"], "quantidade"),
-            "Vendas pista": (
+            "GRID": (
+                "produtoNome",
+                ["GASOLINA ADITIVADA"],
+                "quantidade",
+            ),
+            "Vendas Pista": (
                 "grupoNome",
                 [
                     "LUBRIFICANTES/GRAXAS",
                     "ADITIVOS",
                     "PALHETAS",
                     "FILTROS DE AR",
+                    "FILTROS DE COMBUSTÍVEL",
+                    "FILTROS DE COMBUSTIVEL",
                     "FILTROS DE OLEO",
+                    "DIVERSOS_PISTA",
                     "DIVERSOS PISTA",
                     "PRODUTOS PARA CARRO",
                     "ARLA",
@@ -227,7 +318,84 @@ def main(page: ft.Page):
                 ],
                 "valorVenda",
             ),
-            "Aditivos": ("grupoNome", ["ADITIVOS"], "quantidade"),
+            "Aditivos": (
+                "grupoNome",
+                ["ADITIVOS"],
+                "quantidade",
+            ),
+            "Palhetas": (
+                "grupoNome",
+                ["PALHETAS"],
+                "quantidade",
+            ),
+            "Diversos Pista": (
+                "grupoNome",
+                ["DIVERSOS PISTA"],
+                "quantidade",
+            ),
+            "Produtos para Carro": (
+                "grupoNome",
+                ["PRODUTOS PARA CARRO"],
+                "quantidade",
+            ),
+            "Filtros": (
+                "grupoNome",
+                [
+                    "FILTROS DE AR",
+                    "FILTROS DE COMBUSTÍVEL",
+                    "FILTROS DE OLEO",
+                ],
+                "quantidade",
+            ),
+            "Vendas Loja": (
+                "grupoNome",
+                [
+                    "CARTÕES",
+                    "CIGARROS",
+                    "ICE/COOLER/ENERGETICOS",
+                    "CERVEJAS",
+                    "AGUAS/ CHAS/ REFRIGERANTES",
+                    "BOMBONIERE(CHOCOLATES 25G,76 G",
+                    "BARRAS,CAIXAS CHOCOLATES 100G,300G",
+                    "BOLACHAS/BISCOITOS/TORRADA",
+                    "CONVENIENCIA/ALIMENTOS DIVERSOS",
+                    "DIVERSOS LOJA/BRIQUEDOS E OUTROS",
+                    "SORVETES/PICOLES",
+                    "CHIPS SALGADINHOS",
+                    "BEBIDAS QUENTES",
+                    "HIGIENE/LIMPEZA",
+                    "CHARUTOS/CIGARRILHAS",
+                    "CARTÃO ELETRÔNICO",
+                    "PILHAS",
+                    "CHINELOS",
+                    "SUCOS E ACHOCOLATADOS",
+                    "ELETRONICOS",
+                    "AMENDOINS/ CEREAIS",
+                    "BALAS/ PIRULITOS",
+                    "CHICLETS",
+                    "ESTUFA/FRIOS",
+                    "LIVROS",
+                ],
+                "valorVenda",
+            ),
+            "Troca de Óleo": (
+                "grupoNome",
+                [
+                    "ADITIVOS",
+                    "ARLA",
+                    "AROELAS/BUJOES/ABRACADEIRAS",
+                    "DIVERSOS PISTA",
+                    "FILTROS DE AR",
+                    "FILTROS DE COMBUSTIVEL",
+                    "FILTROS DE COMBUSTÍVEL",
+                    "FILTROS DE OLEO",
+                    "FILTROS DE ÓLEO",
+                    "LUBRIFICANTES/GRAXAS",
+                    "PALHETAS",
+                    "PRODUTOS PARA CARRO",
+                ],
+                "valorVenda",
+            ),
         }
 
         nome_posto = next(
