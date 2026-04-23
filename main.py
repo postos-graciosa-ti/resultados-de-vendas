@@ -1,4 +1,5 @@
 from datetime import date
+
 import flet as ft
 import httpx
 from decouple import config
