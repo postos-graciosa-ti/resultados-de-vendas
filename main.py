@@ -118,12 +118,6 @@ METAS_POR_POSTO = {
     },
 }
 
-META_PADRAO = {
-    "Gasolina grid": {"metas": [1000, 2000, 3000], "fatores": [0.01, 0.02, 0.03]},
-    "Vendas pista": {"metas": [5000, 10000, 15000], "fatores": [0.005, 0.01, 0.015]},
-    "Aditivos": {"metas": [50, 100, 150], "fatores": [1.0, 1.5, 2.0]},
-}
-
 
 def buscar_dados_brutos(data_inicial, data_final, empresa_codigo):
     try:
@@ -190,7 +184,7 @@ def calcular_projecao_diaria(realizado, proxima_meta):
 
 
 def calcular_comissao_e_meta(indicador, realizado, filial_codigo):
-    config_posto = METAS_POR_POSTO.get(filial_codigo, META_PADRAO)
+    config_posto = METAS_POR_POSTO.get(filial_codigo)
 
     config_meta = config_posto.get(
         indicador, {"metas": [0, 0, 0], "fatores": [0, 0, 0]}
