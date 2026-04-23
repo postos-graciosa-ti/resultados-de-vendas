@@ -100,7 +100,7 @@ METAS_POR_POSTO = {
             "fatores": [
                 0.025,
                 0.050,
-                1.000,
+                0.01,
             ],
         },
         "Troca de Óleo": {
@@ -152,7 +152,20 @@ def somar_por_criterio(dados, campo_filtro, valores_filtro, campo_soma):
 
     for item in dados:
         if item.get(campo_filtro) in valores_filtro:
-            total += float(item.get(campo_soma) or 0)
+            valor_bruto = item.get(campo_soma)
+
+            if valor_bruto is not None:
+                if isinstance(valor_bruto, str):
+                    valor_limpo = valor_bruto.replace(".", "").replace(",", ".")
+
+                    try:
+                        total += float(valor_limpo)
+
+                    except ValueError:
+                        print(f"Erro ao converter valor: {valor_bruto}")
+
+                else:
+                    total += float(valor_bruto)
 
     return total
 
@@ -200,9 +213,9 @@ def calcular_comissao_e_meta(indicador, realizado, filial_codigo):
         if realizado >= m:
             nivel_batido = i
 
-    fator_atual = fatores[nivel_batido] if nivel_batido >= 0 else 0.0
+    fator_atual = float(fatores[nivel_batido]) if nivel_batido >= 0 else 0.0
 
-    comissao = realizado * fator_atual
+    comissao = float(realizado) * fator_atual
 
     status_str = ""
 
