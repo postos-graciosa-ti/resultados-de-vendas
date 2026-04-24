@@ -1,82 +1,105 @@
 import json
 import os
-from collections import defaultdict
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import flet as ft
 import httpx
 
-POSTOS = [
-    ("GRACIOSA", "14526"),
-    ("PIRAI", "14566"),
-    ("JARIVA", "14562"),
-    ("BEMER", "14564"),
-    ("GRACIOSA V", "14565"),
-    ("FATIMA", "14563"),
-]
 
-TIPOS_RELATORIO = [
-    ("Relatório de Filial", "filial"),
-    ("Relatório de Funcionários", "funcionarios"),
-]
+def get_config_path() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home()))
 
-CONFIG_FILE = (
-    Path(os.environ.get("APPDATA") or Path.home() / ".config")
-    / "MapaDesempenho"
-    / "config.json"
-)
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+
+    config_dir = base / "PostosGraciosa"
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    return config_dir / "config.json"
 
 
-def _load_file_config() -> dict:
-    try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+def carregar_config() -> dict:
+    path = get_config_path()
 
-    except Exception:
-        return {}
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        except Exception:
+            pass
+
+    return {"WP_BASE_URL": "", "WP_API_KEY": ""}
 
 
-def _save_file_config(data: dict):
-    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    CONFIG_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+def salvar_config(cfg: dict) -> None:
+    get_config_path().write_text(
+        json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
-def cred_get(page: ft.Page, key: str) -> str:
-    try:
-        return page.client_storage.get(key) or ""
+METAS_POR_POSTO = {
+    "14562": {
+        "GRID": {
+            "metas": [10000.0, 12000.0, 15000.0],
+            "fatores": [0.01, 0.015, 0.02],
+        },
+        "Vendas Pista": {
+            "metas": [2000.0, 3000.0, 4000.0],
+            "fatores": [0.05, 0.06, 0.07],
+        },
+        "Aditivos": {
+            "metas": [20.0, 35.0, 6000.0],
+            "fatores": [0.50, 1.50, 0.01],
+        },
+        "Palhetas": {
+            "metas": [10.0, 15.0, 25.0],
+            "fatores": [1.00, 1.50, 2.00],
+        },
+        "Diversos Pista": {
+            "metas": [15.0, 25.0, 30.0],
+            "fatores": [1.00, 1.50, 2.00],
+        },
+        "Produtos para Carro": {
+            "metas": [10.0, 15.0, 25.0],
+            "fatores": [1.00, 1.50, 2.00],
+        },
+        "Filtros": {
+            "metas": [45.0, 60.0, 75.0],
+            "fatores": [1.00, 1.50, 2.00],
+        },
+        "Vendas Loja": {
+            "metas": [6000, 8000, 10000],
+            "fatores": [0.025, 0.050, 0.01],
+        },
+        "Troca de Oleo": {
+            "metas": [15000.0, 20000.0, 25000.0],
+            "fatores": [0.06, 0.07, 0.08],
+        },
+    },
+}
 
-    except AttributeError:
-        return _load_file_config().get(key, "")
 
+def buscar_dados_brutos(data_inicial, data_final, empresa_codigo, cfg):
+    wp_base_url = cfg.get("WP_BASE_URL", "").rstrip("/")
 
-def cred_set(page: ft.Page, key: str, value: str):
-    try:
-        page.client_storage.set(key, value)
+    wp_api_key = cfg.get("WP_API_KEY", "")
 
-    except AttributeError:
-        cfg = _load_file_config()
+    if not wp_base_url or not wp_api_key:
+        raise ValueError(
+            "Configure WP_BASE_URL e WP_API_KEY nas Configuracoes antes de gerar relatorios."
+        )
 
-        cfg[key] = value
-
-        _save_file_config(cfg)
-
-
-def has_creds(page: ft.Page) -> bool:
-    return bool(cred_get(page, "wp_base_url") and cred_get(page, "wp_api_key"))
-
-
-def buscar_dados_brutos(data_inicial, data_final, empresa_codigo, base_url, api_key):
     url = (
-        f"{base_url}/INTEGRACAO/MAPA_DESEMPENHO"
-        f"?CHAVE={api_key}&dataInicial={data_inicial}"
+        f"{wp_base_url}/INTEGRACAO/MAPA_DESEMPENHO"
+        f"?CHAVE={wp_api_key}&dataInicial={data_inicial}"
         f"&dataFinal={data_final}&empresaCodigo={empresa_codigo}"
     )
 
     with httpx.Client() as client:
-        resposta = client.get(url, timeout=30)
+        resposta = client.get(url)
 
         resposta.raise_for_status()
 
@@ -91,734 +114,525 @@ def somar_por_criterio(dados, campo_filtro, valores_filtro, campo_soma):
 
     for item in dados:
         if item.get(campo_filtro) in valores_filtro:
-            total += float(item.get(campo_soma) or 0)
+            valor_bruto = item.get(campo_soma)
+
+            if valor_bruto is not None:
+                if isinstance(valor_bruto, str):
+                    valor_limpo = valor_bruto.replace(".", "").replace(",", ".")
+
+                    try:
+                        total += float(valor_limpo)
+
+                    except ValueError:
+                        pass
+
+                else:
+                    total += float(valor_bruto)
 
     return total
 
 
-def _agregadores_de(dados):
-    return {
-        "Gasolina Grid": somar_por_criterio(
-            dados, "produtoNome", "GASOLINA ADITIVADA", "quantidade"
-        ),
-        "Vendas Pista": somar_por_criterio(
-            dados,
-            "grupoNome",
-            [
-                "LUBRIFICANTES/GRAXAS",
-                "ADITIVOS",
-                "PALHETAS",
-                "FILTROS DE AR",
-                "FILTROS DE COMBUSTÍVEL",
-                "FILTROS DE COMBUSTIVEL",
-                "FILTROS DE OLEO",
-                "DIVERSOS_PISTA",
-                "DIVERSOS PISTA",
-                "PRODUTOS PARA CARRO",
-                "ARLA",
-                "AROELAS/BUJOES/ABRACADEIRAS",
-            ],
-            "valorVenda",
-        ),
-        "Aditivos": somar_por_criterio(dados, "grupoNome", "ADITIVOS", "quantidade"),
-        "Palhetas": somar_por_criterio(dados, "grupoNome", "PALHETAS", "quantidade"),
-        "Diversos Pista": somar_por_criterio(
-            dados, "grupoNome", "DIVERSOS PISTA", "quantidade"
-        ),
-        "Produtos para Carro": somar_por_criterio(
-            dados, "grupoNome", "PRODUTOS PARA CARRO", "quantidade"
-        ),
-        "Filtros": somar_por_criterio(
-            dados,
-            "grupoNome",
-            ["FILTROS DE AR", "FILTROS DE COMBUSTÍVEL", "FILTROS DE OLEO"],
-            "quantidade",
-        ),
-        "Troca de Óleo": somar_por_criterio(
-            dados,
-            "grupoNome",
-            [
-                "ADITIVOS",
-                "ARLA",
-                "AROELAS/BUJOES/ABRACADEIRAS",
-                "DIVERSOS PISTA",
-                "FILTROS DE AR",
-                "FILTROS DE COMBUSTIVEL",
-                "FILTROS DE COMBUSTÍVEL",
-                "FILTROS DE OLEO",
-                "FILTROS DE ÓLEO",
-                "LUBRIFICANTES/GRAXAS",
-                "PALHETAS",
-                "PRODUTOS PARA CARRO",
-            ],
-            "valorVenda",
-        ),
-        "Vendas Loja": somar_por_criterio(
-            dados,
-            "grupoNome",
-            [
-                "CARTÕES",
-                "CIGARROS",
-                "ICE/COOLER/ENERGETICOS",
-                "CERVEJAS",
-                "AGUAS/ CHAS/ REFRIGERANTES",
-                "BOMBONIERE(CHOCOLATES 25G,76 G",
-                "BARRAS,CAIXAS CHOCOLATES 100G,300G",
-                "BOLACHAS/BISCOITOS/TORRADA",
-                "CONVENIENCIA/ALIMENTOS DIVERSOS",
-                "DIVERSOS LOJA/BRIQUEDOS E OUTROS",
-                "SORVETES/PICOLES",
-                "CHIPS SALGADINHOS",
-                "BEBIDAS QUENTES",
-                "HIGIENE/LIMPEZA",
-                "CHARUTOS/CIGARRILHAS",
-                "CARTÃO ELETRÔNICO",
-                "PILHAS",
-                "CHINELOS",
-                "SUCOS E ACHOCOLATADOS",
-                "ELETRONICOS",
-                "AMENDOINS/ CEREAIS",
-                "BALAS/ PIRULITOS",
-                "CHICLETS",
-                "ESTUFA/FRIOS",
-                "LIVROS",
-            ],
-            "valorVenda",
-        ),
-    }
+def calcular_projecao_diaria(realizado, proxima_meta):
+    hoje = date.today()
+
+    if hoje.day <= 25:
+        fim_ciclo = date(hoje.year, hoje.month, 25)
+
+    else:
+        mes_fim = hoje.month + 1 if hoje.month < 12 else 1
+
+        ano_fim = hoje.year if hoje.month < 12 else hoje.year + 1
+
+        fim_ciclo = date(ano_fim, mes_fim, 25)
+
+    dias_restantes = max((fim_ciclo - hoje).days, 1)
+
+    falta = proxima_meta - realizado
+
+    if falta <= 0:
+        return 0, dias_restantes
+
+    return falta / dias_restantes, dias_restantes
 
 
-def gerar_relatorio_filial(data_inicial, data_final, empresa_codigo, base_url, api_key):
-    dados = buscar_dados_brutos(
-        data_inicial, data_final, empresa_codigo, base_url, api_key
+def calcular_comissao_e_meta(indicador, realizado, filial_codigo):
+    config_posto = METAS_POR_POSTO.get(filial_codigo, {})
+
+    config_meta = config_posto.get(
+        indicador, {"metas": [0, 0, 0], "fatores": [0, 0, 0]}
     )
 
-    return _agregadores_de(dados)
+    metas = config_meta["metas"]
 
+    fatores = config_meta["fatores"]
 
-def gerar_relatorio_funcionarios(
-    data_inicial, data_final, empresa_codigo, base_url, api_key
-):
-    dados = buscar_dados_brutos(
-        data_inicial, data_final, empresa_codigo, base_url, api_key
-    )
+    nivel_batido = -1
 
-    por_func: dict[str, list] = defaultdict(list)
+    for i, m in enumerate(metas):
+        if realizado >= m:
+            nivel_batido = i
 
-    for item in dados:
-        nome = item.get("funcionarioNome") or "SEM NOME"
+    fator_atual = float(fatores[nivel_batido]) if nivel_batido >= 0 else 0.0
 
-        por_func[nome].append(item)
+    comissao = float(realizado) * fator_atual
 
-    return {
-        nome: _agregadores_de(registros) for nome, registros in sorted(por_func.items())
-    }
+    if nivel_batido < 2:
+        prox_meta_valor = metas[nivel_batido + 1]
+        falta = prox_meta_valor - realizado
+        valor_diario, _ = calcular_projecao_diaria(realizado, prox_meta_valor)
+        status_str = f"Faltam {falta:,.2f}"
+        diario_str = f"R$ {valor_diario:,.2f}/dia"
+    else:
+        status_str = "Meta Maxima!"
+        diario_str = "-"
 
-
-BG = "#0F1117"
-
-SURFACE = "#1A1D27"
-
-CARD = "#22263A"
-
-ACCENT = "#F5A623"
-
-ACCENT2 = "#4FC3F7"
-
-TEXT = "#E8EAF0"
-
-MUTED = "#6B7280"
-
-SUCCESS = "#34D399"
-
-DANGER = "#F87171"
-
-BORDER = "#2E3247"
-
-MONO = "Courier New"
-
-CURRENCY_KEYS = {"Vendas Pista", "Troca de Óleo", "Vendas Loja"}
-
-
-def fmt_valor(chave, valor):
-    if chave in CURRENCY_KEYS:
-        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-    return f"{valor:,.3f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def fmt_label(chave):
-    return "R$" if chave in CURRENCY_KEYS else "un."
-
-
-def pad(h=0, v=0):
-    return ft.Padding(left=h, right=h, top=v, bottom=v)
-
-
-def margin_bottom(b):
-    return ft.Margin(left=0, right=0, top=0, bottom=b)
-
-
-def margin_h(h):
-    return ft.Margin(left=h, right=h, top=0, bottom=0)
-
-
-def margin_v(v):
-    return ft.Margin(left=0, right=0, top=v, bottom=v)
-
-
-def make_textfield(value="", hint="", keyboard=ft.KeyboardType.TEXT, password=False):
-    return ft.TextField(
-        value=value,
-        hint_text=hint,
-        keyboard_type=keyboard,
-        password=password,
-        can_reveal_password=password,
-        text_style=ft.TextStyle(color=TEXT, font_family=MONO, size=14),
-        hint_style=ft.TextStyle(color=BORDER, size=13),
-        border_color=BORDER,
-        focused_border_color=ACCENT,
-        fill_color=CARD,
-        filled=True,
-        border_radius=6,
-        height=46,
-        content_padding=pad(h=14, v=12),
+    return (
+        nivel_batido + 1,
+        comissao,
+        status_str,
+        diario_str,
+        metas,
+        fatores,
+        fator_atual,
     )
 
 
-def make_dropdown(options_kv, value=None):
-    return ft.Dropdown(
-        options=[ft.dropdown.Option(key=k, text=t) for t, k in options_kv],
-        value=value or options_kv[0][1],
-        text_style=ft.TextStyle(color=TEXT, font_family=MONO, size=14),
-        border_color=BORDER,
-        focused_border_color=ACCENT,
-        fill_color=CARD,
-        filled=True,
-        border_radius=6,
-        height=46,
-        content_padding=pad(h=14, v=4),
-        color=TEXT,
-    )
+# ──────────────────────────────────────────────
+# App principal
+# ──────────────────────────────────────────────
 
-
-def labeled_field(label, control):
-    return ft.Column(
-        controls=[
-            ft.Text(label, size=11, color=MUTED, font_family=MONO),
-            control,
+INDICADORES = {
+    "GRID": ("produtoNome", ["GASOLINA ADITIVADA"], "quantidade"),
+    "Vendas Pista": (
+        "grupoNome",
+        [
+            "LUBRIFICANTES/GRAXAS",
+            "ADITIVOS",
+            "PALHETAS",
+            "FILTROS DE AR",
+            "FILTROS DE COMBUSTIVEL",
+            "FILTROS DE OLEO",
+            "DIVERSOS_PISTA",
+            "DIVERSOS PISTA",
+            "PRODUTOS PARA CARRO",
+            "ARLA",
+            "AROELAS/BUJOES/ABRACADEIRAS",
         ],
-        spacing=6,
-    )
-
-
-def divider_line():
-    return ft.Container(height=1, bgcolor=BORDER, margin=margin_v(8))
-
-
-def resultado_card(chave, valor):
-    is_currency = chave in CURRENCY_KEYS
-    return ft.Container(
-        content=ft.Row(
-            controls=[
-                ft.Column(
-                    controls=[
-                        ft.Text(
-                            chave.upper(),
-                            size=10,
-                            color=MUTED,
-                            font_family=MONO,
-                        ),
-                        ft.Text(
-                            fmt_valor(chave, valor),
-                            size=18,
-                            weight=ft.FontWeight.W_700,
-                            color=ACCENT if is_currency else ACCENT2,
-                            font_family=MONO,
-                        ),
-                    ],
-                    spacing=3,
-                    expand=True,
-                ),
-                ft.Container(
-                    content=ft.Text(
-                        fmt_label(chave), size=9, color=MUTED, font_family=MONO
-                    ),
-                    padding=pad(h=8, v=4),
-                    border=ft.border.all(1, BORDER),
-                    border_radius=4,
-                ),
-            ],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        ),
-        padding=pad(h=16, v=14),
-        bgcolor=CARD,
-        border=ft.border.all(1, BORDER),
-        border_radius=8,
-        margin=margin_bottom(8),
-    )
-
-
-def funcionario_section(nome, indicadores):
-    cards = ft.Column(
-        controls=[resultado_card(k, v) for k, v in indicadores.items()],
-        spacing=0,
-        visible=False,
-    )
-
-    chevron = ft.Text("▶", size=11, color=MUTED, font_family=MONO)
-
-    def toggle(e):
-        cards.visible = not cards.visible
-
-        chevron.value = "▼" if cards.visible else "▶"
-
-        e.control.page.update()
-
-    header_row = ft.Container(
-        content=ft.Row(
-            controls=[
-                ft.Text(
-                    nome,
-                    size=13,
-                    weight=ft.FontWeight.W_600,
-                    color=TEXT,
-                    font_family=MONO,
-                    expand=True,
-                ),
-                chevron,
-            ],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        ),
-        padding=pad(h=16, v=12),
-        bgcolor=SURFACE,
-        border=ft.border.all(1, BORDER),
-        border_radius=8,
-        margin=margin_bottom(4),
-        on_click=toggle,
-        ink=True,
-    )
-
-    return ft.Column(controls=[header_row, cards], spacing=0)
-
-
-def build_config_screen(page: ft.Page, on_save):
-    tf_url = make_textfield(
-        value=cred_get(page, "wp_base_url"),
-        hint="https://api.exemplo.com",
-        keyboard=ft.KeyboardType.URL,
-    )
-
-    tf_key = make_textfield(
-        value=cred_get(page, "wp_api_key"),
-        hint="sua-chave-secreta",
-        password=True,
-    )
-
-    status = ft.Text("", size=12, color=DANGER, font_family=MONO)
-
-    def salvar(e):
-        url = (tf_url.value or "").strip().rstrip("/")
-
-        key = (tf_key.value or "").strip()
-
-        if not url or not key:
-            status.value = "⚠ Preencha os dois campos"
-
-            page.update()
-
-            return
-
-        cred_set(page, "wp_base_url", url)
-
-        cred_set(page, "wp_api_key", key)
-
-        on_save()
-
-    btn = ft.Button(
-        content=ft.Text(
-            "SALVAR E CONTINUAR",
-            font_family=MONO,
-            weight=ft.FontWeight.W_900,
-            size=13,
-            color="#000000",
-        ),
-        style=ft.ButtonStyle(
-            bgcolor=ACCENT,
-            overlay_color=ft.Colors.with_opacity(0.15, "#000000"),
-            shape=ft.RoundedRectangleBorder(radius=6),
-        ),
-        height=48,
-        expand=True,
-        on_click=salvar,
-    )
-
-    plataforma = (
-        "arquivo em %APPDATA%\\MapaDesempenho\\config.json"
-        if os.name == "nt"
-        else "arquivo em ~/.config/MapaDesempenho/config.json"
-    )
-
-    return ft.Column(
-        controls=[
-            ft.Container(height=40),
-            ft.Container(
-                content=ft.Text(
-                    "CONFIGURAÇÃO",
-                    size=22,
-                    weight=ft.FontWeight.W_900,
-                    color=ACCENT,
-                    font_family=MONO,
-                ),
-                padding=ft.Padding(left=28, right=28, top=0, bottom=20),
-            ),
-            ft.Container(
-                content=ft.Column(
-                    controls=[
-                        ft.Text(
-                            "CREDENCIAIS DE ACESSO",
-                            size=11,
-                            color=MUTED,
-                            font_family=MONO,
-                        ),
-                        divider_line(),
-                        ft.Text(
-                            f"Salvas localmente ({plataforma}). Nunca enviadas a terceiros.",
-                            size=11,
-                            color=MUTED,
-                        ),
-                        labeled_field("URL BASE DA API", tf_url),
-                        labeled_field("CHAVE DA API", tf_key),
-                        ft.Container(height=4),
-                        ft.Row(controls=[btn]),
-                        status,
-                    ],
-                    spacing=14,
-                ),
-                padding=20,
-                bgcolor=SURFACE,
-                border=ft.border.all(1, BORDER),
-                border_radius=10,
-                margin=margin_h(20),
-            ),
+        "valorVenda",
+    ),
+    "Aditivos": ("grupoNome", ["ADITIVOS"], "quantidade"),
+    "Palhetas": ("grupoNome", ["PALHETAS"], "quantidade"),
+    "Diversos Pista": ("grupoNome", ["DIVERSOS PISTA"], "quantidade"),
+    "Produtos para Carro": ("grupoNome", ["PRODUTOS PARA CARRO"], "quantidade"),
+    "Filtros": (
+        "grupoNome",
+        ["FILTROS DE AR", "FILTROS DE COMBUSTIVEL", "FILTROS DE OLEO"],
+        "quantidade",
+    ),
+    "Vendas Loja": (
+        "grupoNome",
+        [
+            "CARTOES",
+            "CIGARROS",
+            "ICE/COOLER/ENERGETICOS",
+            "CERVEJAS",
+            "AGUAS/ CHAS/ REFRIGERANTES",
+            "BOMBONIERE(CHOCOLATES 25G,76 G",
+            "BARRAS,CAIXAS CHOCOLATES 100G,300G",
+            "BOLACHAS/BISCOITOS/TORRADA",
+            "CONVENIENCIA/ALIMENTOS DIVERSOS",
+            "DIVERSOS LOJA/BRIQUEDOS E OUTROS",
+            "SORVETES/PICOLES",
+            "CHIPS SALGADINHOS",
+            "BEBIDAS QUENTES",
+            "HIGIENE/LIMPEZA",
+            "CHARUTOS/CIGARRILHAS",
+            "CARTAO ELETRONICO",
+            "PILHAS",
+            "CHINELOS",
+            "SUCOS E ACHOCOLATADOS",
+            "ELETRONICOS",
+            "AMENDOINS/ CEREAIS",
+            "BALAS/ PIRULITOS",
+            "CHICLETS",
+            "ESTUFA/FRIOS",
+            "LIVROS",
         ],
-        spacing=0,
-    )
-
-
-def build_main_screen(page: ft.Page, on_config):
-    base_url = cred_get(page, "wp_base_url")
-
-    api_key = cred_get(page, "wp_api_key")
-
-    today = date.today()
-
-    first_day = today.replace(day=1)
-
-    tf_ini = make_textfield(
-        first_day.strftime("%Y-%m-%d"), "AAAA-MM-DD", keyboard=ft.KeyboardType.DATETIME
-    )
-
-    tf_fim = make_textfield(
-        today.strftime("%Y-%m-%d"), "AAAA-MM-DD", keyboard=ft.KeyboardType.DATETIME
-    )
-
-    dd_posto = make_dropdown(
-        [(f"{n}  ·  {c}", c) for n, c in POSTOS], value=POSTOS[0][1]
-    )
-
-    dd_tipo = make_dropdown(TIPOS_RELATORIO)
-
-    status_text = ft.Text("", size=12, color=MUTED, font_family=MONO)
-
-    resultados_col = ft.Column(spacing=0, visible=False)
-
-    progress = ft.ProgressBar(color=ACCENT, bgcolor=BORDER, visible=False, height=2)
-
-    btn_gerar = ft.Button(
-        content=ft.Text(
-            "GERAR RELATÓRIO",
-            font_family=MONO,
-            weight=ft.FontWeight.W_900,
-            size=13,
-            color="#000000",
-        ),
-        style=ft.ButtonStyle(
-            bgcolor=ACCENT,
-            overlay_color=ft.Colors.with_opacity(0.15, "#000000"),
-            shape=ft.RoundedRectangleBorder(radius=6),
-        ),
-        height=48,
-        expand=True,
-    )
-
-    def validar():
-        erros = []
-
-        for tf, nome in [(tf_ini, "Data inicial"), (tf_fim, "Data final")]:
-            v = (tf.value or "").strip()
-
-            if not v:
-                erros.append(f"{nome} é obrigatório")
-
-            else:
-                try:
-                    datetime.strptime(v, "%Y-%m-%d")
-
-                except ValueError:
-                    erros.append(f"{nome}: formato inválido (use AAAA-MM-DD)")
-
-        return erros
-
-    def on_gerar(e):
-        erros = validar()
-
-        if erros:
-            status_text.value = "⚠ " + " · ".join(erros)
-
-            status_text.color = DANGER
-
-            resultados_col.visible = False
-
-            page.update()
-
-            return
-
-        btn_gerar.disabled = True
-
-        progress.visible = True
-
-        status_text.value = "Buscando dados..."
-
-        status_text.color = MUTED
-
-        resultados_col.visible = False
-
-        page.update()
-
-        nome_posto = next((n for n, c in POSTOS if c == dd_posto.value), dd_posto.value)
-
-        try:
-            resultados_col.controls.clear()
-            resultados_col.controls.append(
-                ft.Container(
-                    content=ft.Column(
-                        controls=[
-                            ft.Row(
-                                controls=[
-                                    ft.Text(
-                                        "RESULTADO",
-                                        size=11,
-                                        color=MUTED,
-                                        font_family=MONO,
-                                    ),
-                                    ft.Text(
-                                        f"{tf_ini.value}  →  {tf_fim.value}",
-                                        size=11,
-                                        color=MUTED,
-                                        font_family=MONO,
-                                    ),
-                                ],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                            ),
-                            ft.Text(
-                                nome_posto.upper(),
-                                size=13,
-                                weight=ft.FontWeight.W_700,
-                                color=ACCENT,
-                                font_family=MONO,
-                            ),
-                        ],
-                        spacing=4,
-                    ),
-                    margin=margin_bottom(12),
-                )
-            )
-
-            if dd_tipo.value == "filial":
-                dados = gerar_relatorio_filial(
-                    tf_ini.value.strip(),
-                    tf_fim.value.strip(),
-                    dd_posto.value,
-                    base_url,
-                    api_key,
-                )
-
-                for chave, valor in dados.items():
-                    resultados_col.controls.append(resultado_card(chave, valor))
-
-                status_text.value = f"✓ {len(dados)} indicadores carregados"
-
-            else:
-                dados = gerar_relatorio_funcionarios(
-                    tf_ini.value.strip(),
-                    tf_fim.value.strip(),
-                    dd_posto.value,
-                    base_url,
-                    api_key,
-                )
-
-                for nome_func, indicadores in dados.items():
-                    resultados_col.controls.append(
-                        funcionario_section(nome_func, indicadores)
-                    )
-
-                status_text.value = (
-                    f"✓ {len(dados)} funcionários  ·  clique para expandir"
-                )
-
-            resultados_col.visible = True
-
-            status_text.color = SUCCESS
-
-        except httpx.HTTPStatusError as ex:
-            status_text.value = f"✗ Erro HTTP {ex.response.status_code}"
-
-            status_text.color = DANGER
-
-        except Exception as ex:
-            status_text.value = f"✗ {ex}"
-
-            status_text.color = DANGER
-
-        finally:
-            btn_gerar.disabled = False
-
-            progress.visible = False
-
-            page.update()
-
-    btn_gerar.on_click = on_gerar
-
-    header_widget = ft.Container(
-        content=ft.Row(
-            controls=[
-                ft.Column(
-                    controls=[
-                        ft.Text(
-                            "MAPA DE DESEMPENHO",
-                            size=22,
-                            weight=ft.FontWeight.W_900,
-                            color=ACCENT,
-                            font_family=MONO,
-                        ),
-                        ft.Text(
-                            "Sistema de Relatórios de Filial",
-                            size=12,
-                            color=MUTED,
-                        ),
-                    ],
-                    spacing=2,
-                ),
-                ft.Row(
-                    controls=[
-                        ft.Container(
-                            content=ft.Text("●", color=SUCCESS, size=10),
-                            padding=pad(h=10, v=5),
-                            border=ft.border.all(1, SUCCESS),
-                            border_radius=4,
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.SETTINGS_OUTLINED,
-                            icon_color=MUTED,
-                            icon_size=20,
-                            tooltip="Alterar credenciais",
-                            on_click=lambda e: on_config(),
-                        ),
-                    ],
-                    spacing=8,
-                ),
-            ],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        ),
-        padding=ft.Padding(left=28, right=28, top=20, bottom=20),
-        border=ft.border.only(bottom=ft.BorderSide(1, BORDER)),
-    )
-
-    form_card = ft.Container(
-        content=ft.Column(
-            controls=[
-                ft.Text(
-                    "PARÂMETROS",
-                    size=11,
-                    color=MUTED,
-                    font_family=MONO,
-                ),
-                divider_line(),
-                ft.Row(
-                    controls=[
-                        labeled_field("DATA INICIAL", tf_ini),
-                        labeled_field("DATA FINAL", tf_fim),
-                    ],
-                    spacing=12,
-                    expand=True,
-                ),
-                labeled_field("POSTO", dd_posto),
-                labeled_field("TIPO DE RELATÓRIO", dd_tipo),
-                ft.Container(height=4),
-                ft.Row(controls=[btn_gerar]),
-                progress,
-                status_text,
-            ],
-            spacing=14,
-        ),
-        padding=20,
-        bgcolor=SURFACE,
-        border=ft.border.all(1, BORDER),
-        border_radius=10,
-        margin=margin_h(20),
-    )
-
-    return ft.Column(
-        controls=[
-            header_widget,
-            ft.Container(height=20),
-            form_card,
-            ft.Container(height=16),
-            ft.Container(
-                content=resultados_col,
-                padding=ft.Padding(left=20, right=20, top=4, bottom=4),
-            ),
-            ft.Container(height=20),
+        "valorVenda",
+    ),
+    "Troca de Oleo": (
+        "grupoNome",
+        [
+            "ADITIVOS",
+            "ARLA",
+            "AROELAS/BUJOES/ABRACADEIRAS",
+            "DIVERSOS PISTA",
+            "FILTROS DE AR",
+            "FILTROS DE COMBUSTIVEL",
+            "FILTROS DE OLEO",
+            "LUBRIFICANTES/GRAXAS",
+            "PALHETAS",
+            "PRODUTOS PARA CARRO",
         ],
-        spacing=0,
-    )
+        "valorVenda",
+    ),
+}
 
 
 def main(page: ft.Page):
-    page.title = "Mapa de Desempenho"
-
-    page.bgcolor = BG
-
+    page.title = "Postos Graciosa | Relatorios de Desempenho"
+    page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
+    page.scroll = ft.ScrollMode.AUTO
 
-    page.window.width = 520
+    cfg = carregar_config()
 
-    page.window.height = 820
+    # ─── Widgets de configuracoes ──────────────────
+    txt_url = ft.TextField(
+        label="URL Base da API (WP_BASE_URL)",
+        hint_text="https://exemplo.com.br",
+        value=cfg.get("WP_BASE_URL", ""),
+        expand=True,
+        prefix_icon=ft.Icons.LINK,
+    )
+    txt_key = ft.TextField(
+        label="Chave da API (WP_API_KEY)",
+        hint_text="Sua chave secreta",
+        value=cfg.get("WP_API_KEY", ""),
+        password=True,
+        can_reveal_password=True,
+        expand=True,
+        prefix_icon=ft.Icons.VPN_KEY,
+    )
+    cfg_status = ft.Text("", color=ft.Colors.GREEN_700)
 
-    page.window.resizable = True
+    # ─── Widgets da tela principal ─────────────────
+    txt_data_ini = ft.TextField(label="Data Inicial", value="2026-03-26", expand=True)
+    txt_data_fim = ft.TextField(label="Data Final", value="2026-04-25", expand=True)
+    dd_filial = ft.Dropdown(
+        label="Selecionar Posto",
+        expand=True,
+        options=[ft.dropdown.Option("14562", "Posto Jariva")],
+        value="14562",
+    )
+    dd_tipo = ft.Dropdown(
+        label="Tipo de Relatorio",
+        options=[
+            ft.dropdown.Option("filial", "RELATORIO POR FILIAL"),
+            ft.dropdown.Option("funcionario", "RELATORIO POR FUNCIONARIO"),
+        ],
+        value="funcionario",
+        expand=True,
+    )
+    result_container = ft.Column(spacing=20)
 
-    page.scroll = ft.ScrollMode.ADAPTIVE
+    aviso_cfg = ft.Container(
+        visible=not (cfg.get("WP_BASE_URL") and cfg.get("WP_API_KEY")),
+        bgcolor=ft.Colors.ORANGE_50,
+        border_radius=8,
+        padding=ft.padding.symmetric(horizontal=12, vertical=8),
+        content=ft.Row(
+            wrap=True,
+            controls=[
+                ft.Icon(ft.Icons.WARNING_AMBER, color=ft.Colors.ORANGE_700),
+                ft.Text(
+                    "API nao configurada. Acesse Configuracoes antes de gerar relatorios.",
+                    color=ft.Colors.ORANGE_900,
+                ),
+            ],
+        ),
+    )
 
-    def show_config():
-        page.controls.clear()
+    # ─── Containers das telas (navegacao por visibilidade) ──
+    tela_principal = ft.Container(expand=True, visible=True)
+    tela_config = ft.Container(expand=True, visible=False)
 
-        page.add(build_config_screen(page, on_save=show_main))
+    def ir_para_config(e=None):
+        txt_url.value = cfg.get("WP_BASE_URL", "")
+        txt_key.value = cfg.get("WP_API_KEY", "")
+        cfg_status.value = ""
+        tela_principal.visible = False
+        tela_config.visible = True
+        page.update()
+
+    def ir_para_principal(e=None):
+        tela_principal.visible = True
+        tela_config.visible = False
+        page.update()
+
+    # ─── Handlers de configuracoes ─────────────────
+    def salvar_cfg(e):
+        nova_cfg = {
+            "WP_BASE_URL": txt_url.value.strip(),
+            "WP_API_KEY": txt_key.value.strip(),
+        }
+        salvar_config(nova_cfg)
+        cfg.update(nova_cfg)
+        cfg_status.value = "Configuracoes salvas com sucesso!"
+        cfg_status.color = ft.Colors.GREEN_700
+        aviso_cfg.visible = not (cfg.get("WP_BASE_URL") and cfg.get("WP_API_KEY"))
+        page.update()
+
+    def testar_conexao(e):
+        cfg_status.value = "Testando conexao..."
+        cfg_status.color = ft.Colors.BLUE_700
+        page.update()
+        try:
+            url = txt_url.value.strip().rstrip("/")
+            key = txt_key.value.strip()
+            if not url or not key:
+                raise ValueError("Preencha URL e Chave antes de testar.")
+            test_url = (
+                f"{url}/INTEGRACAO/MAPA_DESEMPENHO"
+                f"?CHAVE={key}&dataInicial=2026-01-01&dataFinal=2026-01-01&empresaCodigo=14562"
+            )
+            with httpx.Client(timeout=10) as client:
+                r = client.get(test_url)
+            if r.status_code < 500:
+                cfg_status.value = f"Conexao OK - HTTP {r.status_code}"
+                cfg_status.color = ft.Colors.GREEN_700
+            else:
+                cfg_status.value = f"Servidor retornou HTTP {r.status_code}"
+                cfg_status.color = ft.Colors.ORANGE_700
+        except Exception as ex:
+            cfg_status.value = f"Erro: {ex}"
+            cfg_status.color = ft.Colors.RED_700
+        page.update()
+
+    # ─── Handler do relatorio ──────────────────────
+    def processar_relatorio(e):
+        result_container.controls.clear()
+        page.update()
+
+        codigo = dd_filial.value
+        try:
+            dados = buscar_dados_brutos(
+                txt_data_ini.value, txt_data_fim.value, codigo, cfg
+            )
+        except Exception as err:
+            result_container.controls.append(ft.Text(str(err), color=ft.Colors.RED_700))
+            page.update()
+            return
+
+        if not dados:
+            result_container.controls.append(
+                ft.Text("Nenhum dado encontrado.", color="red")
+            )
+            page.update()
+            return
+
+        nome_posto = next(
+            (opt.text for opt in dd_filial.options if opt.key == codigo), "Posto"
+        )
+
+        if dd_tipo.value == "filial":
+            table = ft.DataTable(
+                columns=[
+                    ft.DataColumn(ft.Text("Indicador")),
+                    ft.DataColumn(ft.Text("Total"), numeric=True),
+                ],
+                rows=[],
+            )
+            for nome, specs in INDICADORES.items():
+                valor = somar_por_criterio(dados, specs[0], specs[1], specs[2])
+                table.rows.append(
+                    ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.Text(nome)),
+                            ft.DataCell(ft.Text(f"{valor:,.2f}")),
+                        ]
+                    )
+                )
+            result_container.controls.append(
+                ft.Text(f"Resumo: {nome_posto}", size=20, weight="bold")
+            )
+            result_container.controls.append(table)
+
+        else:
+            funcionarios = sorted(
+                {
+                    item.get("funcionarioNome")
+                    for item in dados
+                    if item.get("funcionarioNome")
+                }
+            )
+            for func in funcionarios:
+                dados_func = [d for d in dados if d.get("funcionarioNome") == func]
+                rows = []
+                for nome, specs in INDICADORES.items():
+                    realizado = somar_por_criterio(
+                        dados_func, specs[0], specs[1], specs[2]
+                    )
+                    nivel, comissao, status, diario, grade_m, grade_f, f_atual = (
+                        calcular_comissao_e_meta(nome, realizado, codigo)
+                    )
+                    rows.append(
+                        ft.DataRow(
+                            cells=[
+                                ft.DataCell(ft.Text(nome)),
+                                ft.DataCell(ft.Text(f"{realizado:,.2f}")),
+                                ft.DataCell(
+                                    ft.Text(
+                                        " | ".join(f"{m:,.0f}" for m in grade_m),
+                                        size=11,
+                                        color="blue_grey",
+                                    )
+                                ),
+                                ft.DataCell(ft.Text(f"Niv. {nivel}")),
+                                ft.DataCell(
+                                    ft.Text(
+                                        " | ".join(f"{f:.3f}" for f in grade_f),
+                                        size=11,
+                                        color="grey_700",
+                                    )
+                                ),
+                                ft.DataCell(
+                                    ft.Text(
+                                        f"{f_atual:.3f}", weight="bold", color="green"
+                                    )
+                                ),
+                                ft.DataCell(ft.Text(status)),
+                                ft.DataCell(
+                                    ft.Text(diario, color="orange", weight="bold")
+                                ),
+                                ft.DataCell(ft.Text(f"R$ {comissao:,.2f}")),
+                            ]
+                        )
+                    )
+
+                result_container.controls.append(
+                    ft.Card(
+                        ft.Container(
+                            padding=10,
+                            content=ft.Column(
+                                [
+                                    ft.Text(f"Funcionario: {func}", weight="bold"),
+                                    ft.DataTable(
+                                        columns=[
+                                            ft.DataColumn(ft.Text("Indicador")),
+                                            ft.DataColumn(ft.Text("Realizado")),
+                                            ft.DataColumn(ft.Text("Metas (1|2|3)")),
+                                            ft.DataColumn(ft.Text("Nivel")),
+                                            ft.DataColumn(ft.Text("Grade Fatores")),
+                                            ft.DataColumn(ft.Text("Fator Atual")),
+                                            ft.DataColumn(ft.Text("Status")),
+                                            ft.DataColumn(ft.Text("Nec./Dia")),
+                                            ft.DataColumn(ft.Text("Comissao")),
+                                        ],
+                                        rows=rows,
+                                    ),
+                                ]
+                            ),
+                        )
+                    )
+                )
 
         page.update()
 
-    def show_main():
-        page.controls.clear()
+    # ─── Montagem das telas ────────────────────────
+    tela_principal.content = ft.Column(
+        scroll=ft.ScrollMode.AUTO,
+        controls=[
+            ft.AppBar(
+                title=ft.Text("Postos Graciosa | Desempenho"),
+                bgcolor=ft.Colors.BLUE_700,
+                color=ft.Colors.WHITE,
+                actions=[
+                    ft.IconButton(
+                        icon=ft.Icons.SETTINGS,
+                        tooltip="Configuracoes",
+                        icon_color=ft.Colors.WHITE,
+                        on_click=ir_para_config,
+                    )
+                ],
+            ),
+            ft.Container(
+                padding=20,
+                content=ft.Column(
+                    spacing=16,
+                    controls=[
+                        aviso_cfg,
+                        ft.Row([txt_data_ini, txt_data_fim, dd_filial]),
+                        ft.Row(
+                            [
+                                dd_tipo,
+                                ft.FilledButton(
+                                    "Gerar Relatorio",
+                                    icon=ft.Icons.PLAY_ARROW,
+                                    on_click=processar_relatorio,
+                                ),
+                            ]
+                        ),
+                        result_container,
+                    ],
+                ),
+            ),
+        ],
+    )
 
-        page.add(build_main_screen(page, on_config=show_config))
+    tela_config.content = ft.Column(
+        scroll=ft.ScrollMode.AUTO,
+        controls=[
+            ft.AppBar(
+                leading=ft.IconButton(
+                    icon=ft.Icons.ARROW_BACK,
+                    icon_color=ft.Colors.WHITE,
+                    on_click=ir_para_principal,
+                ),
+                title=ft.Text("Configuracoes"),
+                bgcolor=ft.Colors.BLUE_700,
+                color=ft.Colors.WHITE,
+            ),
+            ft.Container(
+                padding=24,
+                content=ft.Column(
+                    spacing=20,
+                    controls=[
+                        ft.Text(
+                            "Variaveis de Ambiente",
+                            size=22,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.BLUE_900,
+                        ),
+                        ft.Text(
+                            "As configuracoes sao salvas localmente no dispositivo.",
+                            size=13,
+                            color=ft.Colors.GREY_700,
+                        ),
+                        ft.Divider(),
+                        ft.Row([txt_url]),
+                        ft.Row([txt_key]),
+                        ft.Row(
+                            spacing=12,
+                            controls=[
+                                ft.FilledButton(
+                                    "Salvar",
+                                    icon=ft.Icons.SAVE,
+                                    on_click=salvar_cfg,
+                                ),
+                                ft.OutlinedButton(
+                                    "Testar Conexao",
+                                    icon=ft.Icons.WIFI_TETHERING,
+                                    on_click=testar_conexao,
+                                ),
+                            ],
+                        ),
+                        cfg_status,
+                        ft.Divider(),
+                        ft.Text(
+                            f"Arquivo: {get_config_path()}",
+                            size=11,
+                            color=ft.Colors.GREY_600,
+                            italic=True,
+                        ),
+                    ],
+                ),
+            ),
+        ],
+    )
 
-        page.update()
-
-    if has_creds(page):
-        show_main()
-
-    else:
-        show_config()
+    page.add(tela_principal, tela_config)
 
 
-ft.run(main)
+if __name__ == "__main__":
+    ft.run(main)
