@@ -10,27 +10,20 @@ import httpx
 def get_config_path() -> Path:
     if os.name == "nt":
         base = Path(os.environ.get("APPDATA", Path.home()))
-
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-
     config_dir = base / "PostosGraciosa"
-
     config_dir.mkdir(parents=True, exist_ok=True)
-
     return config_dir / "config.json"
 
 
 def carregar_config() -> dict:
     path = get_config_path()
-
     if path.exists():
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-
         except Exception:
             pass
-
     return {"WP_BASE_URL": "", "WP_API_KEY": ""}
 
 
@@ -84,121 +77,113 @@ METAS_POR_POSTO = {
 
 def buscar_dados_brutos(data_inicial, data_final, empresa_codigo, cfg):
     wp_base_url = cfg.get("WP_BASE_URL", "").rstrip("/")
-
     wp_api_key = cfg.get("WP_API_KEY", "")
-
     if not wp_base_url or not wp_api_key:
         raise ValueError(
             "Configure WP_BASE_URL e WP_API_KEY nas Configuracoes antes de gerar relatorios."
         )
-
     url = (
         f"{wp_base_url}/INTEGRACAO/MAPA_DESEMPENHO"
         f"?CHAVE={wp_api_key}&dataInicial={data_inicial}"
         f"&dataFinal={data_final}&empresaCodigo={empresa_codigo}"
     )
-
     with httpx.Client() as client:
         resposta = client.get(url)
-
         resposta.raise_for_status()
-
         return resposta.json()
 
 
 def somar_por_criterio(dados, campo_filtro, valores_filtro, campo_soma):
     total = 0.0
-
     if isinstance(valores_filtro, str):
         valores_filtro = [valores_filtro]
-
     for item in dados:
         if item.get(campo_filtro) in valores_filtro:
             valor_bruto = item.get(campo_soma)
-
             if valor_bruto is not None:
                 if isinstance(valor_bruto, str):
                     valor_limpo = valor_bruto.replace(".", "").replace(",", ".")
-
                     try:
                         total += float(valor_limpo)
-
                     except ValueError:
                         pass
-
                 else:
                     total += float(valor_bruto)
-
     return total
 
 
-def calcular_projecao_diaria(realizado, proxima_meta):
+def calcular_ciclo_atual():
+    """Retorna (data_inicio, data_fim) do ciclo atual: dia 26 mês anterior até dia 25 mês atual."""
     hoje = date.today()
-
     if hoje.day <= 25:
-        fim_ciclo = date(hoje.year, hoje.month, 25)
-
+        # Ainda no ciclo: início foi dia 26 do mês anterior
+        mes_ini = hoje.month - 1 if hoje.month > 1 else 12
+        ano_ini = hoje.year if hoje.month > 1 else hoje.year - 1
+        inicio = date(ano_ini, mes_ini, 26)
+        fim = date(hoje.year, hoje.month, 25)
     else:
+        # Já passou do dia 25: início é dia 26 do mês atual, fim dia 25 do próximo
+        inicio = date(hoje.year, hoje.month, 26)
         mes_fim = hoje.month + 1 if hoje.month < 12 else 1
-
         ano_fim = hoje.year if hoje.month < 12 else hoje.year + 1
+        fim = date(ano_fim, mes_fim, 25)
+    return inicio, fim
 
-        fim_ciclo = date(ano_fim, mes_fim, 25)
 
+def calcular_necessario_por_dia(realizado, proxima_meta):
+    """Calcula quanto falta por dia até o fim do ciclo para atingir a próxima meta."""
+    hoje = date.today()
+    _, fim_ciclo = calcular_ciclo_atual()
     dias_restantes = max((fim_ciclo - hoje).days, 1)
-
     falta = proxima_meta - realizado
-
     if falta <= 0:
-        return 0, dias_restantes
-
+        return 0.0, dias_restantes
     return falta / dias_restantes, dias_restantes
 
 
-def calcular_comissao_e_meta(indicador, realizado, filial_codigo):
+def calcular_dados_indicador(indicador, realizado, filial_codigo):
+    """Retorna todos os dados calculados para um indicador."""
     config_posto = METAS_POR_POSTO.get(filial_codigo, {})
-
     config_meta = config_posto.get(
         indicador, {"metas": [0, 0, 0], "fatores": [0, 0, 0]}
     )
-
     metas = config_meta["metas"]
-
     fatores = config_meta["fatores"]
 
     nivel_batido = -1
-
     for i, m in enumerate(metas):
         if realizado >= m:
             nivel_batido = i
 
     fator_atual = float(fatores[nivel_batido]) if nivel_batido >= 0 else 0.0
-
     comissao = float(realizado) * fator_atual
 
+    # Próxima meta e necessário/dia
     if nivel_batido < 2:
-        prox_meta_valor = metas[nivel_batido + 1]
-        falta = prox_meta_valor - realizado
-        valor_diario, _ = calcular_projecao_diaria(realizado, prox_meta_valor)
-        status_str = f"Faltam {falta:,.2f}"
-        diario_str = f"R$ {valor_diario:,.2f}/dia"
+        proxima_meta_idx = nivel_batido + 1
+        proxima_meta_valor = metas[proxima_meta_idx]
+        necessario_dia, dias_restantes = calcular_necessario_por_dia(realizado, proxima_meta_valor)
     else:
-        status_str = "Meta Maxima!"
-        diario_str = "-"
+        proxima_meta_idx = None
+        proxima_meta_valor = None
+        necessario_dia = 0.0
+        dias_restantes = 0
 
-    return (
-        nivel_batido + 1,
-        comissao,
-        status_str,
-        diario_str,
-        metas,
-        fatores,
-        fator_atual,
-    )
+    return {
+        "metas": metas,
+        "fatores": fatores,
+        "nivel_batido": nivel_batido,          # -1 = nenhuma meta atingida
+        "fator_atual": fator_atual,
+        "comissao": comissao,
+        "proxima_meta_idx": proxima_meta_idx,
+        "proxima_meta_valor": proxima_meta_valor,
+        "necessario_dia": necessario_dia,
+        "dias_restantes": dias_restantes,
+    }
 
 
 # ──────────────────────────────────────────────
-# App principal
+# Indicadores
 # ──────────────────────────────────────────────
 
 INDICADORES = {
@@ -206,17 +191,10 @@ INDICADORES = {
     "Vendas Pista": (
         "grupoNome",
         [
-            "LUBRIFICANTES/GRAXAS",
-            "ADITIVOS",
-            "PALHETAS",
-            "FILTROS DE AR",
-            "FILTROS DE COMBUSTIVEL",
-            "FILTROS DE OLEO",
-            "DIVERSOS_PISTA",
-            "DIVERSOS PISTA",
-            "PRODUTOS PARA CARRO",
-            "ARLA",
-            "AROELAS/BUJOES/ABRACADEIRAS",
+            "LUBRIFICANTES/GRAXAS", "ADITIVOS", "PALHETAS",
+            "FILTROS DE AR", "FILTROS DE COMBUSTIVEL", "FILTROS DE OLEO",
+            "DIVERSOS_PISTA", "DIVERSOS PISTA", "PRODUTOS PARA CARRO",
+            "ARLA", "AROELAS/BUJOES/ABRACADEIRAS",
         ],
         "valorVenda",
     ),
@@ -232,52 +210,112 @@ INDICADORES = {
     "Vendas Loja": (
         "grupoNome",
         [
-            "CARTOES",
-            "CIGARROS",
-            "ICE/COOLER/ENERGETICOS",
-            "CERVEJAS",
-            "AGUAS/ CHAS/ REFRIGERANTES",
-            "BOMBONIERE(CHOCOLATES 25G,76 G",
-            "BARRAS,CAIXAS CHOCOLATES 100G,300G",
-            "BOLACHAS/BISCOITOS/TORRADA",
-            "CONVENIENCIA/ALIMENTOS DIVERSOS",
-            "DIVERSOS LOJA/BRIQUEDOS E OUTROS",
-            "SORVETES/PICOLES",
-            "CHIPS SALGADINHOS",
-            "BEBIDAS QUENTES",
-            "HIGIENE/LIMPEZA",
-            "CHARUTOS/CIGARRILHAS",
-            "CARTAO ELETRONICO",
-            "PILHAS",
-            "CHINELOS",
-            "SUCOS E ACHOCOLATADOS",
-            "ELETRONICOS",
-            "AMENDOINS/ CEREAIS",
-            "BALAS/ PIRULITOS",
-            "CHICLETS",
-            "ESTUFA/FRIOS",
-            "LIVROS",
+            "CARTOES", "CIGARROS", "ICE/COOLER/ENERGETICOS", "CERVEJAS",
+            "AGUAS/ CHAS/ REFRIGERANTES", "BOMBONIERE(CHOCOLATES 25G,76 G",
+            "BARRAS,CAIXAS CHOCOLATES 100G,300G", "BOLACHAS/BISCOITOS/TORRADA",
+            "CONVENIENCIA/ALIMENTOS DIVERSOS", "DIVERSOS LOJA/BRIQUEDOS E OUTROS",
+            "SORVETES/PICOLES", "CHIPS SALGADINHOS", "BEBIDAS QUENTES",
+            "HIGIENE/LIMPEZA", "CHARUTOS/CIGARRILHAS", "CARTAO ELETRONICO",
+            "PILHAS", "CHINELOS", "SUCOS E ACHOCOLATADOS", "ELETRONICOS",
+            "AMENDOINS/ CEREAIS", "BALAS/ PIRULITOS", "CHICLETS",
+            "ESTUFA/FRIOS", "LIVROS",
         ],
         "valorVenda",
     ),
     "Troca de Oleo": (
         "grupoNome",
         [
-            "ADITIVOS",
-            "ARLA",
-            "AROELAS/BUJOES/ABRACADEIRAS",
-            "DIVERSOS PISTA",
-            "FILTROS DE AR",
-            "FILTROS DE COMBUSTIVEL",
-            "FILTROS DE OLEO",
-            "LUBRIFICANTES/GRAXAS",
-            "PALHETAS",
+            "ADITIVOS", "ARLA", "AROELAS/BUJOES/ABRACADEIRAS",
+            "DIVERSOS PISTA", "FILTROS DE AR", "FILTROS DE COMBUSTIVEL",
+            "FILTROS DE OLEO", "LUBRIFICANTES/GRAXAS", "PALHETAS",
             "PRODUTOS PARA CARRO",
         ],
         "valorVenda",
     ),
 }
 
+
+# ──────────────────────────────────────────────
+# Builders de cards por tipo de relatório
+# ──────────────────────────────────────────────
+
+def build_card_diario(func, rows_diario):
+    """Card do Relatório Diário para um funcionário."""
+    return ft.Card(
+        ft.Container(
+            padding=12,
+            content=ft.Column(
+                spacing=8,
+                controls=[
+                    ft.Text(func, size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                    ft.Divider(height=4),
+                    ft.DataTable(
+                        column_spacing=20,
+                        columns=[
+                            ft.DataColumn(ft.Text("Indicador", weight=ft.FontWeight.BOLD)),
+                            ft.DataColumn(ft.Text("Realizado", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Meta 1", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Meta 2", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Meta 3", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Proxima Meta", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Nec./Dia", weight=ft.FontWeight.BOLD), numeric=True),
+                        ],
+                        rows=rows_diario,
+                    ),
+                ],
+            ),
+        )
+    )
+
+
+def build_card_comissoes(func, rows_comissao, total_comissao):
+    """Card do Relatório de Comissões para um funcionário."""
+    return ft.Card(
+        ft.Container(
+            padding=12,
+            content=ft.Column(
+                spacing=8,
+                controls=[
+                    ft.Text(func, size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                    ft.Divider(height=4),
+                    ft.DataTable(
+                        column_spacing=20,
+                        columns=[
+                            ft.DataColumn(ft.Text("Indicador", weight=ft.FontWeight.BOLD)),
+                            ft.DataColumn(ft.Text("Realizado", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Meta 1", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Meta 2", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Meta 3", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Meta Atingida", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Fator 1", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Fator 2", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Fator 3", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Fator Atual", weight=ft.FontWeight.BOLD), numeric=True),
+                            ft.DataColumn(ft.Text("Comissao", weight=ft.FontWeight.BOLD), numeric=True),
+                        ],
+                        rows=rows_comissao,
+                    ),
+                    ft.Divider(height=4),
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.END,
+                        controls=[
+                            ft.Text(
+                                f"Total de Comissoes: R$ {total_comissao:,.2f}",
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.GREEN_800,
+                            )
+                        ],
+                    ),
+                ],
+            ),
+        )
+    )
+
+
+# ──────────────────────────────────────────────
+# App principal
+# ──────────────────────────────────────────────
 
 def main(page: ft.Page):
     page.title = "Postos Graciosa | Relatorios de Desempenho"
@@ -319,9 +357,10 @@ def main(page: ft.Page):
         label="Tipo de Relatorio",
         options=[
             ft.dropdown.Option("filial", "RELATORIO POR FILIAL"),
-            ft.dropdown.Option("funcionario", "RELATORIO POR FUNCIONARIO"),
+            ft.dropdown.Option("diario", "RELATORIO DIARIO (Por Funcionario)"),
+            ft.dropdown.Option("comissoes", "RELATORIO DE COMISSOES (Por Funcionario)"),
         ],
-        value="funcionario",
+        value="diario",
         expand=True,
     )
     result_container = ft.Column(spacing=20)
@@ -343,7 +382,6 @@ def main(page: ft.Page):
         ),
     )
 
-    # ─── Containers das telas (navegacao por visibilidade) ──
     tela_principal = ft.Container(expand=True, visible=True)
     tela_config = ft.Container(expand=True, visible=False)
 
@@ -360,7 +398,6 @@ def main(page: ft.Page):
         tela_config.visible = False
         page.update()
 
-    # ─── Handlers de configuracoes ─────────────────
     def salvar_cfg(e):
         nova_cfg = {
             "WP_BASE_URL": txt_url.value.strip(),
@@ -399,7 +436,7 @@ def main(page: ft.Page):
             cfg_status.color = ft.Colors.RED_700
         page.update()
 
-    # ─── Handler do relatorio ──────────────────────
+    # ─── Handler do relatório ──────────────────────
     def processar_relatorio(e):
         result_container.controls.clear()
         page.update()
@@ -425,6 +462,7 @@ def main(page: ft.Page):
             (opt.text for opt in dd_filial.options if opt.key == codigo), "Posto"
         )
 
+        # ── RELATÓRIO POR FILIAL ────────────────────
         if dd_tipo.value == "filial":
             table = ft.DataTable(
                 columns=[
@@ -448,83 +486,136 @@ def main(page: ft.Page):
             )
             result_container.controls.append(table)
 
-        else:
-            funcionarios = sorted(
-                {
-                    item.get("funcionarioNome")
-                    for item in dados
-                    if item.get("funcionarioNome")
-                }
+        # ── RELATÓRIO DIÁRIO ────────────────────────
+        elif dd_tipo.value == "diario":
+            _, fim_ciclo = calcular_ciclo_atual()
+            result_container.controls.append(
+                ft.Text(
+                    f"Relatorio Diario — {nome_posto}  |  Ciclo ate {fim_ciclo.strftime('%d/%m/%Y')}",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_900,
+                )
             )
+
+            funcionarios = sorted(
+                {item.get("funcionarioNome") for item in dados if item.get("funcionarioNome")}
+            )
+
             for func in funcionarios:
                 dados_func = [d for d in dados if d.get("funcionarioNome") == func]
-                rows = []
+                rows_diario = []
+
                 for nome, specs in INDICADORES.items():
-                    realizado = somar_por_criterio(
-                        dados_func, specs[0], specs[1], specs[2]
-                    )
-                    nivel, comissao, status, diario, grade_m, grade_f, f_atual = (
-                        calcular_comissao_e_meta(nome, realizado, codigo)
-                    )
-                    rows.append(
+                    realizado = somar_por_criterio(dados_func, specs[0], specs[1], specs[2])
+                    calc = calcular_dados_indicador(nome, realizado, codigo)
+
+                    metas = calc["metas"]
+
+                    # Próxima meta
+                    if calc["proxima_meta_valor"] is not None:
+                        prox_meta_txt = ft.Text(
+                            f"{calc['proxima_meta_valor']:,.2f}",
+                            color=ft.Colors.ORANGE_700,
+                            weight=ft.FontWeight.BOLD,
+                        )
+                        nec_dia_txt = ft.Text(
+                            f"{calc['necessario_dia']:,.2f}",
+                            color=ft.Colors.RED_700,
+                            weight=ft.FontWeight.BOLD,
+                        )
+                    else:
+                        prox_meta_txt = ft.Text("Max. Atingida", color=ft.Colors.GREEN_700, weight=ft.FontWeight.BOLD)
+                        nec_dia_txt = ft.Text("-", color=ft.Colors.GREY_500)
+
+                    rows_diario.append(
                         ft.DataRow(
                             cells=[
                                 ft.DataCell(ft.Text(nome)),
                                 ft.DataCell(ft.Text(f"{realizado:,.2f}")),
+                                ft.DataCell(ft.Text(f"{metas[0]:,.2f}", color=ft.Colors.GREY_700)),
+                                ft.DataCell(ft.Text(f"{metas[1]:,.2f}", color=ft.Colors.GREY_700)),
+                                ft.DataCell(ft.Text(f"{metas[2]:,.2f}", color=ft.Colors.GREY_700)),
+                                ft.DataCell(prox_meta_txt),
+                                ft.DataCell(nec_dia_txt),
+                            ]
+                        )
+                    )
+
+                result_container.controls.append(build_card_diario(func, rows_diario))
+
+        # ── RELATÓRIO DE COMISSÕES ──────────────────
+        elif dd_tipo.value == "comissoes":
+            result_container.controls.append(
+                ft.Text(
+                    f"Relatorio de Comissoes — {nome_posto}",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_900,
+                )
+            )
+
+            funcionarios = sorted(
+                {item.get("funcionarioNome") for item in dados if item.get("funcionarioNome")}
+            )
+
+            for func in funcionarios:
+                dados_func = [d for d in dados if d.get("funcionarioNome") == func]
+                rows_comissao = []
+                total_comissao = 0.0
+
+                for nome, specs in INDICADORES.items():
+                    realizado = somar_por_criterio(dados_func, specs[0], specs[1], specs[2])
+                    calc = calcular_dados_indicador(nome, realizado, codigo)
+
+                    metas = calc["metas"]
+                    fatores = calc["fatores"]
+                    nivel = calc["nivel_batido"]
+                    total_comissao += calc["comissao"]
+
+                    # Meta atingida
+                    if nivel >= 0:
+                        meta_atingida_txt = ft.Text(
+                            f"Meta {nivel + 1}: {metas[nivel]:,.2f}",
+                            color=ft.Colors.GREEN_700,
+                            weight=ft.FontWeight.BOLD,
+                        )
+                    else:
+                        meta_atingida_txt = ft.Text("Nenhuma", color=ft.Colors.RED_400)
+
+                    # Fator atual
+                    fator_atual_txt = ft.Text(
+                        f"{calc['fator_atual']:.3f}",
+                        color=ft.Colors.GREEN_800 if nivel >= 0 else ft.Colors.GREY_500,
+                        weight=ft.FontWeight.BOLD,
+                    )
+
+                    rows_comissao.append(
+                        ft.DataRow(
+                            cells=[
+                                ft.DataCell(ft.Text(nome)),
+                                ft.DataCell(ft.Text(f"{realizado:,.2f}")),
+                                ft.DataCell(ft.Text(f"{metas[0]:,.2f}", color=ft.Colors.GREY_700)),
+                                ft.DataCell(ft.Text(f"{metas[1]:,.2f}", color=ft.Colors.GREY_700)),
+                                ft.DataCell(ft.Text(f"{metas[2]:,.2f}", color=ft.Colors.GREY_700)),
+                                ft.DataCell(meta_atingida_txt),
+                                ft.DataCell(ft.Text(f"{fatores[0]:.3f}", color=ft.Colors.GREY_600)),
+                                ft.DataCell(ft.Text(f"{fatores[1]:.3f}", color=ft.Colors.GREY_600)),
+                                ft.DataCell(ft.Text(f"{fatores[2]:.3f}", color=ft.Colors.GREY_600)),
+                                ft.DataCell(fator_atual_txt),
                                 ft.DataCell(
                                     ft.Text(
-                                        " | ".join(f"{m:,.0f}" for m in grade_m),
-                                        size=11,
-                                        color="blue_grey",
+                                        f"R$ {calc['comissao']:,.2f}",
+                                        color=ft.Colors.GREEN_800,
+                                        weight=ft.FontWeight.BOLD,
                                     )
                                 ),
-                                ft.DataCell(ft.Text(f"Niv. {nivel}")),
-                                ft.DataCell(
-                                    ft.Text(
-                                        " | ".join(f"{f:.3f}" for f in grade_f),
-                                        size=11,
-                                        color="grey_700",
-                                    )
-                                ),
-                                ft.DataCell(
-                                    ft.Text(
-                                        f"{f_atual:.3f}", weight="bold", color="green"
-                                    )
-                                ),
-                                ft.DataCell(ft.Text(status)),
-                                ft.DataCell(
-                                    ft.Text(diario, color="orange", weight="bold")
-                                ),
-                                ft.DataCell(ft.Text(f"R$ {comissao:,.2f}")),
                             ]
                         )
                     )
 
                 result_container.controls.append(
-                    ft.Card(
-                        ft.Container(
-                            padding=10,
-                            content=ft.Column(
-                                [
-                                    ft.Text(f"Funcionario: {func}", weight="bold"),
-                                    ft.DataTable(
-                                        columns=[
-                                            ft.DataColumn(ft.Text("Indicador")),
-                                            ft.DataColumn(ft.Text("Realizado")),
-                                            ft.DataColumn(ft.Text("Metas (1|2|3)")),
-                                            ft.DataColumn(ft.Text("Nivel")),
-                                            ft.DataColumn(ft.Text("Grade Fatores")),
-                                            ft.DataColumn(ft.Text("Fator Atual")),
-                                            ft.DataColumn(ft.Text("Status")),
-                                            ft.DataColumn(ft.Text("Nec./Dia")),
-                                            ft.DataColumn(ft.Text("Comissao")),
-                                        ],
-                                        rows=rows,
-                                    ),
-                                ]
-                            ),
-                        )
-                    )
+                    build_card_comissoes(func, rows_comissao, total_comissao)
                 )
 
         page.update()
@@ -605,16 +696,8 @@ def main(page: ft.Page):
                         ft.Row(
                             spacing=12,
                             controls=[
-                                ft.FilledButton(
-                                    "Salvar",
-                                    icon=ft.Icons.SAVE,
-                                    on_click=salvar_cfg,
-                                ),
-                                ft.OutlinedButton(
-                                    "Testar Conexao",
-                                    icon=ft.Icons.WIFI_TETHERING,
-                                    on_click=testar_conexao,
-                                ),
+                                ft.FilledButton("Salvar", icon=ft.Icons.SAVE, on_click=salvar_cfg),
+                                ft.OutlinedButton("Testar Conexao", icon=ft.Icons.WIFI_TETHERING, on_click=testar_conexao),
                             ],
                         ),
                         cfg_status,
